@@ -77,10 +77,11 @@ class Problem:
 def _start_run(name: str, cfg: Dict[str, Any], mode: str, extra: Dict[str, Any]) -> Optional[Any]:
     if not HAS_WANDB or mode == "disabled":
         return None
+    tag: str = str(extra.get("tag", ""))
     return wandb.init(
         project=str(cfg["wandb"]["project"]),
-        group="optimizer-comparison",
-        name=name,
+        group=f"optimizer-comparison/{tag}" if tag else "optimizer-comparison",
+        name=f"{name}/{tag}" if tag else name,
         mode=mode,
         config=extra,
         reinit=True,
@@ -95,10 +96,11 @@ def run_baseline(
     log_every: int,
     cfg: Dict[str, Any],
     mode: str,
+    tag: str = "",
 ) -> Dict[str, float]:
     w = torch.nn.Parameter(torch.zeros(problem.dataset.n_features, device=problem.device))
     opt: torch.optim.Optimizer = make_opt([w])
-    run = _start_run(name, cfg, mode, {"optimizer": name, "steps": steps})
+    run = _start_run(name, cfg, mode, {"optimizer": name, "steps": steps, "tag": tag})
     for k in range(steps):
         opt.zero_grad(set_to_none=True)
         loss: torch.Tensor = problem.loss_on(w, problem.sampler.batch(k))
@@ -121,6 +123,7 @@ def run_svrg(
     log_every: int,
     cfg: Dict[str, Any],
     mode: str,
+    tag: str = "",
 ) -> Dict[str, float]:
     opt_cfg: Dict[str, Any] = dict(cfg["optimizer"])
     w = torch.nn.Parameter(torch.zeros(problem.dataset.n_features, device=problem.device))
@@ -135,7 +138,7 @@ def run_svrg(
         telemetry=bool(opt_cfg["telemetry"]),
     )
     num_chunks: int = len(problem.chunk_rows)
-    run = _start_run("svrg", cfg, mode, {"optimizer": "svrg", "steps": steps, **opt_cfg})
+    run = _start_run("svrg", cfg, mode, {"optimizer": "svrg", "steps": steps, "tag": tag, **opt_cfg})
 
     def batch_closure(batch_id: int) -> torch.Tensor:
         return problem.loss_on(w, problem.sampler.batch(batch_id))
@@ -171,35 +174,59 @@ def main() -> None:
     parser.add_argument("--log-every", type=int, default=10)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--wandb-mode", default=None, choices=["online", "offline", "disabled"])
+    parser.add_argument(
+        "--noise-regimes", nargs="+", default=None,
+        help="names from noise_sigma_levels (default: the config's noise_regime)",
+    )
+    parser.add_argument("--seeds", type=int, default=1, help="number of dataset seeds per regime")
     args = parser.parse_args()
 
     cfg: Dict[str, Any] = load_config(args.config)
     mode: str = args.wandb_mode or str(cfg["wandb"]["mode"])
     steps: int = args.steps or int(cfg["training"]["inner_steps"])
-    dataset: MarketDataset = generate_market(RegimeConfig.from_dict(cfg))
-    problem = Problem(
-        dataset,
-        batch_size=int(cfg["training"]["batch_size"]),
-        chunks=int(cfg["training"]["snapshot_chunks"]),
-        device=args.device,
-    )
-    print(f"device={args.device}  SNR={dataset.empirical_snr_db:.2f} dB  steps={steps}")
+    levels: Dict[str, float] = dict(cfg["environment"]["noise_sigma_levels"])
+    regimes: List[str] = args.noise_regimes or [str(cfg["environment"]["noise_regime"])]
+    for regime in regimes:
+        if regime not in levels:
+            raise SystemExit(f"unknown regime '{regime}', choose from {sorted(levels)}")
 
     lr: float = float(cfg["optimizer"]["lr"])
-    results: Dict[str, Dict[str, float]] = {
-        "svrg": run_svrg(problem, steps, args.log_every, cfg, mode),
-        "adam": run_baseline(
-            "adam", problem, lambda p: torch.optim.Adam(p, lr=lr),
-            steps, args.log_every, cfg, mode,
-        ),
-        "sgd_momentum": run_baseline(
-            "sgd_momentum", problem, lambda p: torch.optim.SGD(p, lr=lr, momentum=0.9),
-            steps, args.log_every, cfg, mode,
-        ),
-    }
-    print(f"{'optimizer':<14}{'loss gap':>14}{'dist to w*':>14}")
-    for name, res in results.items():
-        print(f"{name:<14}{res['loss_gap']:>14.3e}{res['dist_to_optimum']:>14.3e}")
+    base_seed: int = int(cfg["seed"])
+    optimizers: List[str] = ["svrg", "adam", "sgd_momentum"]
+    summary: Dict[str, Dict[str, List[Dict[str, float]]]] = {}
+
+    for regime in regimes:
+        summary[regime] = {name: [] for name in optimizers}
+        for seed_offset in range(args.seeds):
+            run_cfg: Dict[str, Any] = dict(cfg)
+            run_cfg["seed"] = base_seed + seed_offset
+            run_cfg["environment"] = {**cfg["environment"], "noise_regime": regime}
+            dataset: MarketDataset = generate_market(RegimeConfig.from_dict(run_cfg))
+            problem = Problem(
+                dataset,
+                batch_size=int(cfg["training"]["batch_size"]),
+                chunks=int(cfg["training"]["snapshot_chunks"]),
+                device=args.device,
+            )
+            tag: str = f"{regime}/seed{base_seed + seed_offset}"
+            print(f"[{tag}] device={args.device}  SNR={dataset.empirical_snr_db:.2f} dB  steps={steps}")
+            summary[regime]["svrg"].append(run_svrg(problem, steps, args.log_every, run_cfg, mode, tag))
+            summary[regime]["adam"].append(run_baseline(
+                "adam", problem, lambda p: torch.optim.Adam(p, lr=lr),
+                steps, args.log_every, run_cfg, mode, tag,
+            ))
+            summary[regime]["sgd_momentum"].append(run_baseline(
+                "sgd_momentum", problem, lambda p: torch.optim.SGD(p, lr=lr, momentum=0.9),
+                steps, args.log_every, run_cfg, mode, tag,
+            ))
+
+    print(f"\nmedian over {args.seeds} seed(s)")
+    print(f"{'regime':<10}{'optimizer':<14}{'loss gap':>14}{'dist to w*':>14}")
+    for regime in regimes:
+        for name in optimizers:
+            gaps: List[float] = [r["loss_gap"] for r in summary[regime][name]]
+            dists: List[float] = [r["dist_to_optimum"] for r in summary[regime][name]]
+            print(f"{regime:<10}{name:<14}{float(np.median(gaps)):>14.3e}{float(np.median(dists)):>14.3e}")
 
 
 if __name__ == "__main__":
