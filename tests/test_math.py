@@ -2,6 +2,7 @@
 
 Layout:
     * environment / sampler determinism   (NumPy only, always runs)
+    * NumPy reference oracle + theory     (NumPy only, always runs)
     * PyTorch backend invariants          (skipped if torch is missing)
     * JAX backend invariants              (skipped if jax is missing)
     * cross-backend parity                (skipped unless both are present)
@@ -35,6 +36,7 @@ from src.environment import (  # noqa: E402
     generate_market,
     load_config,
 )
+from src.reference_numpy import ReferenceConfig, ReferenceSVRG  # noqa: E402
 
 try:
     import torch
@@ -168,6 +170,150 @@ def test_full_pass_chunks_partition_the_data() -> None:
     assert np.array_equal(joined, np.arange(dataset.n_samples))
     with pytest.raises(ValueError):
         sampler.full_pass_chunks(7)
+
+
+# --------------------------------------------------------------------------- #
+# NumPy reference oracle and the analytical results in docs/THEORY.md
+# --------------------------------------------------------------------------- #
+def test_reference_first_step_is_sign_step() -> None:
+    """Bias-corrected first step: m_hat = g, v_hat = g^2, so update = sign(g)."""
+    config = ReferenceConfig(lr=0.1, snapshot_interval=10)
+    ref = ReferenceSVRG(config, dim=3)
+    w0 = np.zeros(3)
+    ref.refresh_snapshot(w0, np.array([0.5, -2.0, 0.0]))
+    g_live = np.array([0.5, -2.0, 0.0])
+    w1 = ref.step(w0, g_live, grad_snapshot=np.zeros(3))
+    # g_hat = g_live - 0 + mu = [1.0, -4.0, 0.0] -> update [+1, -1, 0]
+    assert np.allclose(w1, w0 - 0.1 * np.array([1.0, -1.0, 0.0]))
+
+
+def test_reference_ablation_flags_change_behaviour() -> None:
+    plain = ReferenceSVRG(ReferenceConfig(variance_reduction=False), dim=2)
+    assert not plain.needs_snapshot                       # Adam / SGD need no snapshot
+    vr = ReferenceSVRG(ReferenceConfig(variance_reduction=True), dim=2)
+    assert vr.needs_snapshot
+    with pytest.raises(RuntimeError):
+        vr.step(np.zeros(2), np.ones(2), np.ones(2))      # VR without a snapshot
+    momentum_only = ReferenceSVRG(
+        ReferenceConfig(lr=0.5, beta1=0.0, variance_reduction=False, adaptive=False), dim=2
+    )
+    w1 = momentum_only.step(np.zeros(2), np.array([2.0, -4.0]))
+    assert np.allclose(w1, [-1.0, 2.0])                   # plain SGD step: w - lr * g
+
+
+def test_reference_zero_and_nonfinite_gradients_are_safe() -> None:
+    ref = ReferenceSVRG(ReferenceConfig(lr=0.1), dim=4)
+    ref.refresh_snapshot(np.ones(4), np.zeros(4))
+    w = np.ones(4)
+    for _ in range(5):
+        w = ref.step(w, np.zeros(4), np.zeros(4))
+    assert np.array_equal(w, np.ones(4))
+    w = ref.step(w, np.full(4, np.nan), np.full(4, np.nan))
+    assert np.isfinite(w).all()
+    assert np.isfinite(ref.exp_avg).all() and np.isfinite(ref.exp_avg_sq).all()
+    w = ref.step(w, np.full(4, np.inf), np.zeros(4))
+    assert np.isfinite(w).all()
+
+
+def test_lemma1_variance_reduced_gradient_is_unbiased() -> None:
+    """Averaging g_hat over ALL equal-size batches of a partition gives grad F exactly."""
+    dataset, _, chunks = ls_problem()
+    w_snap = np.linspace(-0.3, 0.3, dataset.n_features)
+    w = np.linspace(0.4, -0.2, dataset.n_features)
+    mu = dataset.full_gradient(w_snap)
+    mean_hat = np.mean(
+        [sgd_batch_gradient(dataset, c, w) - sgd_batch_gradient(dataset, c, w_snap) + mu for c in chunks],
+        axis=0,
+    )
+    assert np.allclose(mean_hat, dataset.full_gradient(w), atol=1e-12)
+
+
+def test_lemma2_bound_and_least_squares_scaling_identity() -> None:
+    """Var(g_hat) <= Lbar2/b ||w - w~||^2, and scales exactly with displacement^2."""
+    dataset, sampler, chunks = ls_problem(batch_size=16)
+    w_star = dataset.optimal_weights
+    mu = dataset.full_gradient(w_star)
+    direction = np.linspace(-1.0, 1.0, dataset.n_features)
+    direction /= np.linalg.norm(direction)
+    l_i = np.sum(dataset.features ** 2, axis=1)
+    lbar2 = float(np.mean(l_i ** 2))
+
+    def variance(displacement: float) -> float:
+        w = w_star + displacement * direction
+        true_grad = dataset.full_gradient(w)
+        total = 0.0
+        for batch_id in range(200):
+            rows = sampler.batch(batch_id)
+            g_hat = (
+                sgd_batch_gradient(dataset, rows, w)
+                - sgd_batch_gradient(dataset, rows, w_star)
+                + mu
+            )
+            total += float(np.sum((g_hat - true_grad) ** 2))
+        return total / 200.0
+
+    far, near, zero = variance(0.5), variance(0.05), variance(0.0)
+    assert far <= lbar2 / 16.0 * 0.5 ** 2
+    assert near <= lbar2 / 16.0 * 0.05 ** 2
+    assert abs(near / far - 0.01) < 1e-9        # exact quadratic scaling for least squares
+    assert zero < 1e-25
+
+
+def test_proposition3_staleness_bound_holds_for_the_adaptive_engine() -> None:
+    """Run the reference engine; at max staleness Var(g_hat) must respect Proposition 3."""
+    dataset, sampler, _ = ls_problem(batch_size=16)
+    interval = 8
+    config = ReferenceConfig(lr=0.05, snapshot_interval=interval, update_clip=10.0)
+    ref = ReferenceSVRG(config, dataset.n_features)
+    l_i = np.sum(dataset.features ** 2, axis=1)
+    lbar2 = float(np.mean(l_i ** 2))
+    bound = lbar2 * dataset.n_features * (config.lr * config.update_clip * interval) ** 2 / 16.0
+    probe_rng = np.random.default_rng(0)
+    w = np.zeros(dataset.n_features)
+    checked = 0
+    for step in range(96):
+        if ref.needs_snapshot:
+            ref.refresh_snapshot(w, dataset.full_gradient(w))
+        if ref.steps_since_snapshot == interval - 1:
+            true_grad = dataset.full_gradient(w)
+            total = 0.0
+            for _ in range(32):
+                rows = np.sort(probe_rng.choice(dataset.n_samples, size=16, replace=False))
+                g_hat = ref.variance_reduced_gradient(
+                    w, sgd_batch_gradient(dataset, rows, w),
+                    sgd_batch_gradient(dataset, rows, ref.snapshot),
+                )
+                total += float(np.sum((g_hat - true_grad) ** 2))
+            assert total / 32.0 <= bound
+            checked += 1
+        rows = sampler.batch(step)
+        w = ref.step(
+            w, sgd_batch_gradient(dataset, rows, w),
+            sgd_batch_gradient(dataset, rows, ref.snapshot),
+        )
+    assert checked >= 5
+
+
+def test_reference_svrg_beats_its_own_noise_floor_ablation() -> None:
+    """Same lr: VR keeps converging where the VR-off ablation stalls at a noise floor."""
+    dataset, sampler, chunks = ls_problem(batch_size=16)
+    w_star = dataset.optimal_weights
+
+    def run(variance_reduction: bool) -> float:
+        cfg = ReferenceConfig(lr=0.02, snapshot_interval=64, variance_reduction=variance_reduction)
+        ref = ReferenceSVRG(cfg, dataset.n_features)
+        w = np.zeros(dataset.n_features)
+        for step in range(800):
+            if ref.needs_snapshot:
+                ref.refresh_snapshot(w, dataset.full_gradient(w))
+            rows = sampler.batch(step)
+            g_snap = sgd_batch_gradient(dataset, rows, ref.snapshot) if variance_reduction else None
+            w = ref.step(w, sgd_batch_gradient(dataset, rows, w), g_snap)
+        return float(np.linalg.norm(w - w_star))
+
+    with_vr, without_vr = run(True), run(False)
+    assert with_vr < 1e-3
+    assert without_vr > 10.0 * with_vr
 
 
 # --------------------------------------------------------------------------- #
@@ -658,3 +804,57 @@ def test_torch_and_jax_agree_step_for_step() -> None:
         opt.step(lambda b: torch_loss(sampler.batch(b)), batch_id=batch_id)
         params, state, _ = step(params, state, batch_at(batch_id))
         assert np.allclose(w_t.detach().numpy(), np.asarray(params), atol=1e-4)
+
+
+# --------------------------------------------------------------------------- #
+# Differential tests: engines vs the independent NumPy oracle
+# --------------------------------------------------------------------------- #
+@requires_torch
+def test_torch_matches_numpy_reference_trajectory() -> None:
+    dataset, sampler, chunks, w, batch_closure, chunk_closure = _torch_ls_setup()
+    interval, steps = 5, 14
+    opt = CoordinateSVRG([w], lr=0.02, snapshot_interval=interval)
+    ref = ReferenceSVRG(ReferenceConfig(lr=0.02, snapshot_interval=interval), dataset.n_features)
+    w_ref = np.zeros(dataset.n_features)
+    for k in range(steps):
+        if opt.needs_snapshot:
+            opt.refresh_snapshot(chunk_closure, num_chunks=len(chunks))
+        opt.step(batch_closure)
+        if ref.needs_snapshot:
+            ref.refresh_snapshot(w_ref, dataset.full_gradient(w_ref))
+        rows = sampler.batch(k)
+        w_ref = ref.step(
+            w_ref,
+            sgd_batch_gradient(dataset, rows, w_ref),
+            sgd_batch_gradient(dataset, rows, ref.snapshot),
+        )
+        assert np.allclose(w.detach().numpy(), w_ref, atol=1e-8), f"diverged from oracle at step {k}"
+    assert opt.step_count == ref.step_count == steps
+
+
+@requires_jax
+def test_jax_matches_numpy_reference_trajectory() -> None:
+    dataset, sampler, loss_fn, batch_at, chunk_stack = _jax_ls_setup()
+    interval, steps = 5, 10
+    config = SVRGConfig(lr=0.02, snapshot_interval=interval)
+    step_fn = make_svrg_step(loss_fn, config)
+    params = jnp.zeros((dataset.n_features,), dtype=jnp.float32)
+    state = init_state(params)
+    ref = ReferenceSVRG(ReferenceConfig(lr=0.02, snapshot_interval=interval), dataset.n_features)
+    w_ref = np.zeros(dataset.n_features)
+    since = interval
+    for k in range(steps):
+        if since >= interval:
+            state = refresh_snapshot(params, state, compute_full_gradient(loss_fn, params, chunk_stack))
+            since = 0
+        params, state, _ = step_fn(params, state, batch_at(k))
+        since += 1
+        if ref.needs_snapshot:
+            ref.refresh_snapshot(w_ref, dataset.full_gradient(w_ref))
+        rows = sampler.batch(k)
+        w_ref = ref.step(
+            w_ref,
+            sgd_batch_gradient(dataset, rows, w_ref),
+            sgd_batch_gradient(dataset, rows, ref.snapshot),
+        )
+        assert np.allclose(np.asarray(params), w_ref, atol=1e-4), f"diverged from oracle at step {k}"
