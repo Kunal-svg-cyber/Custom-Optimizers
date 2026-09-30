@@ -1,1 +1,44 @@
+# Low-SNR stochastic regime configuration for the coordinate-wise SVRG engine.
+# Every random stream in the project is derived from `seed`, so a run is
+# reproducible bit-for-bit given the same config.
 
+seed: 1337
+
+environment:
+  n_samples: 4096          # rows in the simulated tick history (finite-sum size)
+  n_features: 32           # number of order-book / microstructure features
+  feature_autocorr: 0.30   # AR(1) coefficient of the feature stream
+  signal_scale: 0.50       # L2 norm of the hidden alpha vector
+  alpha_drift_sigma: 0.01  # per-tick random-walk std of the hidden alpha
+  regime_switch_prob: 0.002  # per-tick probability alpha is redrawn entirely
+
+  # Noise threshold (sigma) per named regime; `noise_regime` picks one.
+  noise_sigma_levels:
+    calm: 0.25
+    volatile: 1.00
+    toxic: 3.00
+  noise_regime: volatile
+
+  toxic_flow_prob: 0.02    # probability a tick carries a toxic-flow shock
+  toxic_flow_scale: 2.00   # scale of the heavy-tailed toxic-flow shock
+  toxic_flow_df: 3.0       # Student-t degrees of freedom (lower = heavier tails)
+  jump_prob: 0.005         # probability of an arbitrage jump on a tick
+  jump_scale: 8.00         # base magnitude of an arbitrage jump
+
+optimizer:
+  lr: 0.02
+  betas: [0.9, 0.999]      # (first-moment momentum, second-moment decay)
+  eps: 1.0e-15             # denominator floor (clamp, never additive)
+  weight_decay: 0.0
+  snapshot_interval: 64    # inner steps between full-gradient snapshot refreshes
+  update_clip: 10.0        # cap on |m_hat / sqrt(v_hat)| per coordinate
+  telemetry: true
+
+training:
+  batch_size: 64
+  inner_steps: 640
+  snapshot_chunks: 8       # chunks used for the full-gradient pass (must divide n_samples)
+
+wandb:
+  project: custom-optimizers
+  mode: offline            # set to "online" inside Codespaces / Colab after `wandb login`
