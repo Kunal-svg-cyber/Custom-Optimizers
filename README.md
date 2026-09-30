@@ -1,129 +1,99 @@
-# custom-optimizers
+# Coordinate-wise SVRG for low signal-to-noise objectives
 
-Coordinate-wise **SVRG** (Stochastic Variance Reduced Gradient) with adaptive
-momentum, built for low signal-to-noise objectives where Adam/SGD stall on a
-non-vanishing variance floor. Two backends share one algorithm:
+A from-scratch variance-reduced optimizer with adaptive coordinate scaling, in two backends (PyTorch, JAX),
+validated against an independent NumPy oracle, with a written theory note, a tuned ablation, and an
+honest account of what the evidence does and does not show.
 
-| Backend | File | Style |
-|---|---|---|
-| PyTorch | `src/torch_optimizer.py` | stateful `torch.optim.Optimizer`, flat contiguous memory |
-| JAX | `src/jax_optimizer.py` | stateless `state_t -> state_t+1`, PyTree state, `jax.jit` |
+**Start here:** [`docs/THEORY.md`](docs/THEORY.md) (what is proved, cited, open) and [`docs/RESULTS.md`](docs/RESULTS.md) (experiments and limitations).
 
-## The algorithm
+## Headline findings (synthetic least-squares testbed, see RESULTS.md for protocol and caveats)
 
-```
-g_hat = g_t(w_t) - g_t(w~) + mu~            # variance-reduced gradient
-m     = b1*m + (1-b1)*g_hat                 # momentum
-v     = b2*v + (1-b2)*g_hat^2               # second moment
-w    <- w - lr * clip( m_hat / max(sqrt(v_hat), floor), +-update_clip )
-```
-
-`w~` is a frozen snapshot, `mu~` the full gradient at `w~`, refreshed every
-`snapshot_interval` inner steps.
+| Finding | Evidence |
+|---|---|
+| With the same sample-gradient budget, SVRG variants converge to float64 round-off while tuned Adam / SGD-momentum (constant and cosine-decay lr) stall at 1e-5 to 1e-7 | Experiment 1, three noise regimes, held-out seeds |
+| The gain comes from variance reduction, **not** from the adaptive scaling (SVRG + momentum matches Coordinate SVRG) | Experiment 1 ablation |
+| Gradient variance falls ~1e15x along the trajectory while SGD variance stays flat, and stays under the proved bounds in 25/25 probes | Experiment 2, Lemma 2, Proposition 3 |
+| No measurable benefit for walk-forward signal tracking at this problem size | Experiment 3 (null result, reported as such) |
 
 ## The four invariants
 
-| # | Invariant | How it is enforced |
+| # | Invariant | How it is enforced / verified |
 |---|---|---|
-| 1 | **Variance reduction** — `E||g_hat - grad f(w_t)||^2 -> 0` as `w_t -> w*` | snapshot control variate; `variance_reduced_gradient(...)` exposes `g_hat`; telemetry logs `snapshot_distance` and `correction_norm` |
-| 2 | **Deterministic sample alignment** | the step passes ONE batch id (torch) / ONE batch object (JAX) to both the live and snapshot gradient evaluations; `DeterministicBatchSampler` maps id -> fixed rows |
-| 3 | **Hardware contiguity** | torch: parameters re-pointed into one flat buffer; snapshot, `mu~`, `m`, `v` in one `(4, N)` block; swapping to the snapshot is one `copy_` |
-| 4 | **Coordinate boundary safeguards** | NaN/Inf sanitised, `|g|` bounded so `g^2` stays finite, denominator **clamped** (not offset) at `max(eps, 4*sqrt(tiny))`, final ratio clipped |
+| 1 | **Variance reduction**: `E||g_hat - grad F||^2 -> 0` | snapshot control variate; Lemma 2 + exact least-squares scaling identity (tested); Proposition 3 gives a `snapshot_interval` design rule |
+| 2 | **Deterministic sample alignment** | one batch id / batch object feeds both the live and snapshot gradient; `DeterministicBatchSampler` |
+| 3 | **Hardware contiguity** | torch: parameters re-pointed into one flat buffer, snapshot / mu / m / v in one `(4, N)` block |
+| 4 | **Coordinate boundary safeguards** | sanitised + bounded gradients, clamped (not offset) denominator, clipped ratio; Proposition 4 |
 
-## Setup (Codespace / Colab)
+## Algorithm
+
+```
+g_hat = g_t(w_t) - g_t(w~) + mu~            # variance-reduced gradient (same batch for both terms)
+m     = b1*m + (1-b1)*g_hat
+v     = b2*v + (1-b2)*g_hat^2
+w    <- w - lr * clip( m_hat / max(sqrt(v_hat), floor), +-update_clip )
+```
+
+## Quick start (Codespace / Colab)
 
 ```bash
 pip install -r requirements.txt
-python -m pytest tests/ -v
+python -m pytest tests/ -v                       # invariants + oracle + differential tests
+python -m experiments.run_experiments            # regenerates results/ and docs/figures/ (~2 min, CPU)
+python -m benchmarks.compare_optimizers --device cuda --wandb-mode online   # torch engine on a T4
 ```
 
-## PyTorch usage
-
-```python
-import torch
-from src.environment import market_from_yaml, DeterministicBatchSampler
-from src.torch_optimizer import CoordinateSVRG
-
-ds = market_from_yaml("configs/stochastic_regime.yaml")
-X = torch.as_tensor(ds.features, dtype=torch.float32, device="cuda")
-y = torch.as_tensor(ds.targets, dtype=torch.float32, device="cuda")
-w = torch.nn.Parameter(torch.zeros(ds.n_features, device="cuda"))
-
-sampler = DeterministicBatchSampler(ds.n_samples, batch_size=64, seed=ds.config.seed)
-chunks = sampler.full_pass_chunks(8)
-
-def loss_on(rows):
-    idx = torch.as_tensor(rows, device="cuda")
-    return 0.5 * ((X[idx] @ w - y[idx]) ** 2).mean()
-
-batch_closure = lambda batch_id: loss_on(sampler.batch(batch_id))   # pure in batch_id
-chunk_closure = lambda chunk_id: loss_on(chunks[chunk_id])
-
-opt = CoordinateSVRG([w], lr=0.02, snapshot_interval=64)
-for _ in range(640):
-    if opt.needs_snapshot:
-        opt.refresh_snapshot(chunk_closure, num_chunks=len(chunks))
-    opt.step(batch_closure)
-    # wandb.log(opt.last_stats)   # step_us, snapshot_distance, correction_norm, ...
-```
-
-Rules: build the optimizer after the model is on its final device/dtype; mutate
-parameters in place (never reassign `p.data`); closures must be deterministic in
-their id argument.
-
-## JAX usage
-
-```python
-import jax.numpy as jnp
-from src.jax_optimizer import (SVRGConfig, init_state, make_svrg_step,
-                               compute_full_gradient, refresh_snapshot)
-
-def loss_fn(w, batch):
-    x, y = batch
-    return 0.5 * jnp.mean((x @ w - y) ** 2)
-
-config = SVRGConfig(lr=0.02, snapshot_interval=64)
-step = make_svrg_step(loss_fn, config)          # jitted pure function
-params = jnp.zeros(ds.n_features)
-state = init_state(params)
-
-for i in range(640):
-    if i % config.snapshot_interval == 0:
-        full_grad = compute_full_gradient(loss_fn, params, chunk_stack)  # leading axis = chunks
-        state = refresh_snapshot(params, state, full_grad)
-    params, state, stats = step(params, state, batch_at(i))
-```
+`notebooks/colab_runner.ipynb` does all of this on a Colab T4 (edit `REPO_URL` first).
 
 ## Repository layout
 
 ```
-configs/stochastic_regime.yaml   regime, noise sigma levels, seeds, optimizer knobs
-src/environment.py               toxic market simulator + deterministic batch sampler
-src/torch_optimizer.py           stateful PyTorch engine
-src/jax_optimizer.py             stateless JAX engine
-tests/test_math.py               invariant validation (pytest)
-benchmarks/compare_optimizers.py SVRG vs Adam vs SGD-momentum, logged to W&B
-notebooks/colab_runner.ipynb     one-click Colab T4 runner (clone, test, benchmark)
+configs/stochastic_regime.yaml    regime, noise sigma levels, seeds, optimizer knobs
+src/environment.py                toxic market simulator + deterministic batch sampler
+src/torch_optimizer.py            stateful PyTorch engine (flat contiguous memory, telemetry)
+src/jax_optimizer.py              stateless JAX engine (PyTree state, jax.jit)
+src/reference_numpy.py            independent NumPy oracle + 2x2 ablation switches
+tests/test_math.py                invariant tests, theory checks, engine-vs-oracle differential tests
+experiments/run_experiments.py    tuned ablation, variance decay, walk-forward (NumPy only)
+benchmarks/compare_optimizers.py  torch engine vs Adam / SGD, logged to Weights & Biases
+docs/THEORY.md                    lemmas with proofs, cited theorem, open questions
+docs/RESULTS.md                   tables, figures, interpretation, limitations
+results/                          raw JSON + tables from the last run
 ```
 
-## Design notes
+## Validation status
 
-* Adaptive normalisation keeps the step size near `lr` even when gradients
-  shrink, so SVRG here converges because `v` has long memory (`beta2 = 0.999`)
-  and `m` decays faster. If you need exact convergence over long horizons,
-  decay `lr` or raise `beta2`.
-* `eps` is a *floor on the denominator*, not an additive term, so a 1e-15 value
-  is meaningful even in float32.
+* Environment, sampler, NumPy oracle, and the theory checks (Lemmas 1 and 2, Propositions 3 and 4 behaviour) are run and passing.
+* The PyTorch and JAX engines and their tests are **written to be validated against the oracle**; run `pytest` to confirm on your machine.
+* All experiment numbers come from the NumPy oracle, not from the torch/JAX engines.
 
-## Benchmark
+## PyTorch usage
 
-```bash
-python -m benchmarks.compare_optimizers --wandb-mode offline   # CPU or GPU
-python -m benchmarks.compare_optimizers --device cuda --wandb-mode online
-# all three noise regimes, 3 dataset seeds each, median summary table:
-python -m benchmarks.compare_optimizers --noise-regimes calm volatile toxic --seeds 3
+```python
+from src.torch_optimizer import CoordinateSVRG
+
+opt = CoordinateSVRG([w], lr=0.02, snapshot_interval=64)
+for _ in range(steps):
+    if opt.needs_snapshot:
+        opt.refresh_snapshot(chunk_closure, num_chunks=8)   # mean loss over chunk `id`
+    opt.step(batch_closure)                                  # loss for batch `id`; called twice per step
+    # wandb.log(opt.last_stats)   # step_us, snapshot_distance, correction_norm, ...
 ```
 
-Compares loss gap and distance to the optimum against **sample-gradient
-evaluations** (an SVRG step costs two batch gradients plus periodic full
-passes), so the comparison is not flattered by counting steps.
+Closures take an integer id and must be deterministic in it, otherwise the alignment invariant cannot hold.
+Build the optimizer after the model is on its final device/dtype and mutate parameters in place.
+
+## JAX usage
+
+```python
+from src.jax_optimizer import SVRGConfig, init_state, make_svrg_step, compute_full_gradient, refresh_snapshot
+
+config = SVRGConfig(lr=0.02, snapshot_interval=64)
+step = make_svrg_step(loss_fn, config)            # jitted pure function
+state = init_state(params)
+state = refresh_snapshot(params, state, compute_full_gradient(loss_fn, params, chunk_stack))
+params, state, stats = step(params, state, batch)
+```
+
+## References
+
+See `docs/THEORY.md` (Johnson & Zhang 2013; Kingma & Ba 2015; Reddi et al. 2016, 2018; Defazio & Bottou 2019; and others).
