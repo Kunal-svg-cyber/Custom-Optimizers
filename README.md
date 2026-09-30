@@ -102,6 +102,7 @@ src/environment.py               toxic market simulator + deterministic batch sa
 src/torch_optimizer.py           stateful PyTorch engine
 src/jax_optimizer.py             stateless JAX engine
 tests/test_math.py               invariant validation (pytest)
+benchmarks/compare_optimizers.py SVRG vs Adam vs SGD-momentum, logged to W&B
 ```
 
 ## Design notes
@@ -112,3 +113,14 @@ tests/test_math.py               invariant validation (pytest)
   decay `lr` or raise `beta2`.
 * `eps` is a *floor on the denominator*, not an additive term, so a 1e-15 value
   is meaningful even in float32.
+
+## Benchmark
+
+```bash
+python -m benchmarks.compare_optimizers --wandb-mode offline   # CPU or GPU
+python -m benchmarks.compare_optimizers --device cuda --wandb-mode online
+```
+
+Compares loss gap and distance to the optimum against **sample-gradient
+evaluations** (an SVRG step costs two batch gradients plus periodic full
+passes), so the comparison is not flattered by counting steps.
