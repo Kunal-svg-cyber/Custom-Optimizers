@@ -103,6 +103,7 @@ src/torch_optimizer.py           stateful PyTorch engine
 src/jax_optimizer.py             stateless JAX engine
 tests/test_math.py               invariant validation (pytest)
 benchmarks/compare_optimizers.py SVRG vs Adam vs SGD-momentum, logged to W&B
+notebooks/colab_runner.ipynb     one-click Colab T4 runner (clone, test, benchmark)
 ```
 
 ## Design notes
@@ -119,6 +120,8 @@ benchmarks/compare_optimizers.py SVRG vs Adam vs SGD-momentum, logged to W&B
 ```bash
 python -m benchmarks.compare_optimizers --wandb-mode offline   # CPU or GPU
 python -m benchmarks.compare_optimizers --device cuda --wandb-mode online
+# all three noise regimes, 3 dataset seeds each, median summary table:
+python -m benchmarks.compare_optimizers --noise-regimes calm volatile toxic --seeds 3
 ```
 
 Compares loss gap and distance to the optimum against **sample-gradient
