@@ -317,6 +317,45 @@ def test_reference_svrg_beats_its_own_noise_floor_ablation() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Objectives used by the experiment suite
+# --------------------------------------------------------------------------- #
+def test_logistic_objective_gradient_optimum_and_gap() -> None:
+    from experiments.run_experiments import LogisticRegression
+
+    dataset, _, _ = ls_problem()
+    labels = np.where(dataset.targets >= 0.0, 1.0, -1.0)
+    obj = LogisticRegression(dataset.features, labels, l2=1e-2)
+    rng = np.random.default_rng(0)
+    w = rng.standard_normal(obj.d) * 0.3
+    # analytic gradient vs central finite differences
+    numeric = np.array([
+        (obj.loss(w + 1e-6 * e) - obj.loss(w - 1e-6 * e)) / 2e-6 for e in np.eye(obj.d)
+    ])
+    assert np.allclose(obj.full_grad(w), numeric, atol=1e-7)
+    # mini-batch gradient over the whole data equals the full gradient
+    assert np.allclose(obj.grad(w, np.arange(obj.n)), obj.full_grad(w), atol=1e-12)
+    # Newton reaches a stationary point; the gap is zero there and positive elsewhere
+    obj.prepare()
+    assert np.linalg.norm(obj.full_grad(obj.optimum)) < 1e-10
+    assert obj.gap(obj.optimum) == 0.0
+    assert obj.gap(w) > 0.0
+    # direct difference and local quadratic form agree across the switch-over
+    delta = 5e-3 * rng.standard_normal(obj.d)
+    near = obj.optimum + delta
+    direct = obj.loss(near) - obj.loss(obj.optimum)
+    assert abs(obj.gap(near) - direct) / direct < 1e-2
+
+
+def test_least_squares_gap_matches_loss_difference() -> None:
+    from experiments.run_experiments import LeastSquares
+
+    dataset, _, _ = ls_problem()
+    obj = LeastSquares(dataset.features, dataset.targets)
+    w = np.linspace(-1.0, 1.0, obj.d)
+    assert abs(obj.gap(w) - (obj.loss(w) - obj.optimal_loss)) < 1e-12
+
+
+# --------------------------------------------------------------------------- #
 # PyTorch backend
 # --------------------------------------------------------------------------- #
 def _torch_ls_setup(
