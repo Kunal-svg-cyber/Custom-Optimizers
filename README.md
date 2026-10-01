@@ -6,13 +6,14 @@ honest account of what the evidence does and does not show.
 
 **Start here:** [`docs/THEORY.md`](docs/THEORY.md) (what is proved, cited, open) and [`docs/RESULTS.md`](docs/RESULTS.md) (experiments and limitations).
 
-## Headline findings (synthetic least-squares testbed, see RESULTS.md for protocol and caveats)
+## Headline findings (synthetic testbeds, convex objectives; see `docs/RESULTS.md` for protocol and caveats)
 
 | Finding | Evidence |
 |---|---|
-| With the same sample-gradient budget, SVRG variants converge to float64 round-off while tuned Adam / SGD-momentum (constant and cosine-decay lr) stall at 1e-5 to 1e-7 | Experiment 1, three noise regimes, held-out seeds |
-| The gain comes from variance reduction, **not** from the adaptive scaling (SVRG + momentum matches Coordinate SVRG) | Experiment 1 ablation |
-| Gradient variance falls ~1e15x along the trajectory while SGD variance stays flat, and stays under the proved bounds in 25/25 probes | Experiment 2, Lemma 2, Proposition 3 |
+| Variance reduction dominates on well-scaled problems: SVRG variants reach float64 round-off (or within 1e-16 of it) at the same sample-gradient budget where tuned Adam / SGD-momentum (constant and cosine-decay lr) stall at 1e-5 to 1e-8 | Experiments 1, 4, 5 (least squares, logistic regression, larger problem), held-out seeds |
+| Adaptive scaling matters only when features are badly scaled; there, variance reduction + adaptive scaling + lr decay is the only method to hit the target, beating tuned Adam with cosine decay by about 5 orders of magnitude | Experiment 6 |
+| Gradient variance falls about 1e15x along the trajectory while SGD variance stays flat, and stays under the proved bounds in 25/25 probes | Experiment 2, Lemma 2, Proposition 3 |
+| At `n = 40000`, `d = 200` a direct solve (normal equations, 0.04 s) is still faster than SVRG (0.07 s); no wall-clock win over direct methods at this size | Experiment 5 |
 | No measurable benefit for walk-forward signal tracking at this problem size | Experiment 3 (null result, reported as such) |
 
 ## The four invariants
@@ -38,7 +39,7 @@ w    <- w - lr * clip( m_hat / max(sqrt(v_hat), floor), +-update_clip )
 ```bash
 pip install -r requirements.txt
 python -m pytest tests/ -v                       # invariants + oracle + differential tests
-python -m experiments.run_experiments            # regenerates results/ and docs/figures/ (~2 min, CPU)
+python -m experiments.run_experiments            # regenerates results/ and docs/figures/ (~6 min, CPU)
 python -m benchmarks.compare_optimizers --device cuda --wandb-mode online   # torch engine on a T4
 ```
 
@@ -53,7 +54,7 @@ src/torch_optimizer.py            stateful PyTorch engine (flat contiguous memor
 src/jax_optimizer.py              stateless JAX engine (PyTree state, jax.jit)
 src/reference_numpy.py            independent NumPy oracle + 2x2 ablation switches
 tests/test_math.py                invariant tests, theory checks, engine-vs-oracle differential tests
-experiments/run_experiments.py    tuned ablation, variance decay, walk-forward (NumPy only)
+experiments/run_experiments.py    six experiments: tuned ablations, variance decay, walk-forward (NumPy only)
 benchmarks/compare_optimizers.py  torch engine vs Adam / SGD, logged to Weights & Biases
 docs/THEORY.md                    lemmas with proofs, cited theorem, open questions
 docs/RESULTS.md                   tables, figures, interpretation, limitations
