@@ -217,6 +217,58 @@ class LogisticRegression:
         return float(0.5 * delta @ (self._hessian_opt @ delta))  # type: ignore[operator]
 
 
+class MLPRegression:
+    """One-hidden-layer tanh network, mean-squared loss: a small NON-CONVEX finite sum.
+
+    Parameters are flattened as [W1 (in x h), b1 (h), w2 (h), b2 (1)]. ``d`` is the
+    flat parameter dimension (what the optimizers see); ``gap`` is the squared
+    full-gradient norm, the standard stationarity measure for non-convex problems,
+    because no global optimum is known.
+    """
+
+    def __init__(self, features: FloatArray, targets: FloatArray, hidden: int, init_seed: int) -> None:
+        self.features: FloatArray = features
+        self.targets: FloatArray = targets
+        self.n: int = int(features.shape[0])
+        self.in_dim: int = int(features.shape[1])
+        self.hidden: int = hidden
+        self.d: int = self.in_dim * hidden + hidden + hidden + 1
+        rng = np.random.default_rng(init_seed)
+        w1: FloatArray = rng.standard_normal((self.in_dim, hidden)) / math.sqrt(self.in_dim)
+        w2: FloatArray = rng.standard_normal(hidden) / math.sqrt(hidden)
+        self.init_weights: FloatArray = np.concatenate([w1.ravel(), np.zeros(hidden), w2, np.zeros(1)])
+        self._all_rows: npt.NDArray[np.int64] = np.arange(self.n, dtype=np.int64)
+
+    def _unpack(self, w: FloatArray) -> Tuple[FloatArray, FloatArray, FloatArray, float]:
+        i, h = self.in_dim, self.hidden
+        return (w[: i * h].reshape(i, h), w[i * h: i * h + h], w[i * h + h: i * h + 2 * h], float(w[-1]))
+
+    def grad(self, w: FloatArray, rows: npt.NDArray[np.int64]) -> FloatArray:
+        w1, b1, w2, b2 = self._unpack(w)
+        x: FloatArray = self.features[rows]
+        hidden_act: FloatArray = np.tanh(x @ w1 + b1)
+        resid: FloatArray = (hidden_act @ w2 + b2 - self.targets[rows]) / float(len(rows))
+        d_hidden: FloatArray = (resid[:, None] * w2[None, :]) * (1.0 - hidden_act * hidden_act)
+        return np.concatenate([
+            (x.T @ d_hidden).ravel(), d_hidden.sum(axis=0), hidden_act.T @ resid, np.array([resid.sum()]),
+        ])
+
+    def full_grad(self, w: FloatArray) -> FloatArray:
+        return self.grad(w, self._all_rows)
+
+    def loss(self, w: FloatArray) -> float:
+        w1, b1, w2, b2 = self._unpack(w)
+        pred: FloatArray = np.tanh(self.features @ w1 + b1) @ w2 + b2
+        return float(0.5 * np.mean((pred - self.targets) ** 2))
+
+    def gap(self, w: FloatArray) -> float:
+        g: FloatArray = self.full_grad(w)
+        return float(g @ g)
+
+    def prepare(self) -> None:
+        return None
+
+
 @dataclass
 class RunResult:
     weights: FloatArray
@@ -381,6 +433,7 @@ def run_ablation(
     lr_points: int,
     snapshot_interval: Optional[int] = None,
     time_direct_solve: bool = False,
+    tune_on_loss: bool = False,
 ) -> Dict[str, Any]:
     """Tuned variant comparison: lr sweep on tuning seeds, scoring on disjoint seeds."""
     opt_cfg: Dict[str, Any] = dict(cfg["optimizer"])
@@ -421,26 +474,31 @@ def run_ablation(
                     sampler = DeterministicBatchSampler(n, batch_size, seed0 + 1000 + j)
                     run = optimize(
                         obj, sampler, reference_config(opt_cfg, variant, float(lr)), budget,
-                        lr_schedule=VARIANTS[variant][2],
+                        w0=getattr(obj, "init_weights", None), lr_schedule=VARIANTS[variant][2],
                     )
-                    gaps.append(run.final_gap)
+                    gaps.append(run.final_gap if not tune_on_loss else obj.loss(run.weights))
                 tune_scores.append(float(np.median(gaps)))
             best_idx: int = int(np.argmin(np.where(np.isfinite(tune_scores), tune_scores, np.inf)))
             best_lr: float = float(lr_grid[best_idx])
 
             final_gaps: List[float] = []
+            final_losses: List[float] = []
             curves: List[List[float]] = []
             curve_secs: List[List[float]] = []
             evals_to_target: List[float] = []
             secs_to_target: List[float] = []
             for obj, seed in zip(eval_sets, eval_seed_ids):
                 sampler = DeterministicBatchSampler(n, batch_size, seed)
-                initial_gap: float = obj.gap(np.zeros(obj.d))
+                initial_gap: float = obj.gap(
+                    np.zeros(obj.d) if getattr(obj, "init_weights", None) is None else obj.init_weights
+                )
                 run = optimize(
                     obj, sampler, reference_config(opt_cfg, variant, best_lr), budget,
+                    w0=getattr(obj, "init_weights", None),
                     checkpoints=checkpoints, lr_schedule=VARIANTS[variant][2],
                 )
                 final_gaps.append(run.final_gap)
+                final_losses.append(obj.loss(run.weights))
                 curves.append(run.curve_gaps)
                 curve_secs.append(run.curve_seconds)
                 target: float = args.target_ratio * initial_gap
@@ -456,6 +514,8 @@ def run_ablation(
                 "final_gap_q25": q25,
                 "final_gap_median": q50,
                 "final_gap_q75": q75,
+                "final_gaps": final_gaps,
+                "final_loss_median": float(np.median(final_losses)),
                 "evals_to_target_median": float(np.median(evals_to_target)),
                 "seconds_to_target_median": float(np.median(secs_to_target)),
                 "curve_evals": checkpoints.tolist(),
@@ -499,6 +559,38 @@ def experiment_hetero(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str
     out["description"] = (f"Least squares with column scales spread over {args.het_decades:g} decades, "
                           f"n={base.n_samples}, d={base.n_features}, batch {out['batch_size']}, "
                           f"snapshot every {out['snapshot_interval']} steps")
+    return out
+
+
+def mlp_factory(base: RegimeConfig, hidden: int) -> ObjectiveFactory:
+    """Nonlinear target tanh(2 * clean signal) plus Gaussian noise: a non-convex fit."""
+    def make(seed: int, sigma: float) -> Any:
+        ds = make_dataset(base, seed, sigma)
+        clean: FloatArray = np.einsum("td,td->t", ds.features, ds.alpha_path)
+        targets: FloatArray = np.tanh(2.0 * clean) + 0.5 * ds.gaussian_noise
+        return MLPRegression(ds.features, targets, hidden, init_seed=seed + 31)
+    return make
+
+
+def experiment_nonconvex(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    """Experiment 7: non-convex one-hidden-layer network; no guarantees apply."""
+    base: RegimeConfig = dataclasses.replace(
+        RegimeConfig.from_dict(cfg), n_features=args.nc_inputs, alpha_drift_sigma=0.0, regime_switch_prob=0.0,
+    )
+    sigma: float = float(cfg["environment"]["noise_sigma_levels"]["volatile"])
+    out = run_ablation(
+        cfg, args, mlp_factory(base, args.nc_hidden), tag="exp7",
+        regimes={"volatile": sigma},
+        epochs=args.nc_epochs, batch_size=int(cfg["training"]["batch_size"]),
+        tune_seeds=args.nc_tune_seeds, eval_seeds=args.nc_eval_seeds,
+        seed_offset=8000, lr_points=args.nc_lr_points, tune_on_loss=True,
+    )
+    out["description"] = (f"Non-convex: one-hidden-layer tanh network ({args.nc_inputs}-{args.nc_hidden}-1, "
+                          f"{out['regimes']['volatile']['d']} parameters), n={base.n_samples}, batch {out['batch_size']}, "
+                          f"snapshot every {out['snapshot_interval']} steps. Learning rate tuned on final TRAIN LOSS; "
+                          "the 'gap' column is the squared full-gradient norm (no global optimum is known)")
+    out["metric"] = "squared full-gradient norm"
+    out["report_loss"] = True
     return out
 
 
@@ -690,7 +782,10 @@ def experiment_walk_forward(cfg: Dict[str, Any], args: argparse.Namespace) -> Di
             summary[method] = {}
             for metric in per_seed[0][method]:
                 q25, q50, q75 = quartiles([s[method][metric] for s in per_seed])
-                summary[method][metric] = {"q25": q25, "median": q50, "q75": q75}
+                summary[method][metric] = {
+                    "q25": q25, "median": q50, "q75": q75,
+                    "values": [s[method][metric] for s in per_seed],
+                }
         by_budget[str(budget)] = summary
         line: str = "  ".join(f"{m}={summary[m]['ic_clean']['median']:.3f}" for m in summary)
         print(f"  [exp3] budget {budget:>6}: IC(clean) median  {line}")
@@ -707,6 +802,71 @@ def experiment_walk_forward(cfg: Dict[str, Any], args: argparse.Namespace) -> Di
 # --------------------------------------------------------------------------- #
 # Reporting
 # --------------------------------------------------------------------------- #
+def paired_bootstrap(diffs: Sequence[float], draws: int = 5000, seed: int = 0) -> Tuple[float, float, float]:
+    """Median paired difference with a 95% bootstrap interval (resampling seeds)."""
+    arr: FloatArray = np.asarray(diffs, dtype=np.float64)
+    rng = np.random.default_rng(seed)
+    meds: FloatArray = np.median(rng.choice(arr, size=(draws, len(arr)), replace=True), axis=1)
+    return float(np.median(arr)), float(np.percentile(meds, 2.5)), float(np.percentile(meds, 97.5))
+
+
+def significance_lines(results: Dict[str, Any]) -> List[str]:
+    """Paired comparisons on held-out seeds, in decades of loss gap (log10)."""
+    lines: List[str] = [
+        "### Paired comparisons on held-out seeds",
+        "",
+        "Difference in `log10(final gap)`: **negative means the first method is better**. Median over seeds with a 95% "
+        "paired bootstrap interval (resampling seeds); 'wins' counts seeds where the first method had the smaller gap. "
+        "Baselines are the four non-SVRG methods; 'best baseline' is the one with the lowest median gap in that cell. "
+        "Gaps at float64 round-off are floored at 1e-40.",
+        "",
+        "| Experiment / regime | Comparison | median diff (decades) | 95% CI | wins |",
+        "|---|---|---|---|---|",
+    ]
+    names = {"ablation": "Exp 1 least squares", "logistic": "Exp 4 logistic", "highdim": "Exp 5 larger LS",
+             "hetero": "Exp 6 bad scaling", "nonconvex": "Exp 7 non-convex"}
+    baselines = ["sgd_momentum", "sgd_momentum_cosine", "adam", "adam_cosine"]
+    for key, label in names.items():
+        if key not in results:
+            continue
+        for regime, block in results[key]["regimes"].items():
+            v = block["variants"]
+            if "final_gaps" not in v["svrg_adam"]:
+                continue
+            best_base = min(baselines, key=lambda b: v[b]["final_gap_median"])
+            logs = {m: np.log10(np.maximum(np.asarray(v[m]["final_gaps"], dtype=float), 1e-40)) for m in v}
+            pairs = [("svrg_adam_cosine", best_base), ("svrg_adam", best_base), ("svrg_momentum", best_base),
+                     ("svrg_adam", "svrg_momentum")]
+            for a_name, b_name in pairs:
+                if a_name not in logs or b_name not in logs:
+                    continue
+                diff = logs[a_name] - logs[b_name]
+                med, lo, hi = paired_bootstrap(diff)
+                wins = int(np.sum(diff < 0))
+                lines.append(
+                    f"| {label} / {regime} | {VARIANT_LABELS[a_name]} vs {VARIANT_LABELS[b_name]} | "
+                    f"{med:+.2f} | [{lo:+.2f}, {hi:+.2f}] | {wins}/{len(diff)} |"
+                )
+    if "walk_forward" in results:
+        lines += [
+            "",
+            "Walk-forward (Experiment 3): paired difference in out-of-sample IC versus OLS, median with 95% bootstrap interval over seeds. "
+            "An interval containing 0 means no detectable difference.",
+            "",
+            "| Budget / window | Method vs OLS | median IC diff | 95% CI |",
+            "|---|---|---|---|",
+        ]
+        for budget, summ in results["walk_forward"]["by_budget"].items():
+            if "values" not in summ["ols"]["ic_clean"]:
+                continue
+            for method, label in (("adam", "Adam"), ("svrg_adam", "Coordinate SVRG")):
+                diff = np.asarray(summ[method]["ic_clean"]["values"]) - np.asarray(summ["ols"]["ic_clean"]["values"])
+                med, lo, hi = paired_bootstrap(diff)
+                lines.append(f"| {int(budget):,} | {label} | {med:+.4f} | [{lo:+.4f}, {hi:+.4f}] |")
+    lines.append("")
+    return lines
+
+
 def write_tables(results: Dict[str, Any], path: Path) -> None:
     lines: List[str] = []
     ablation_blocks = (
@@ -714,6 +874,7 @@ def write_tables(results: Dict[str, Any], path: Path) -> None:
         ("logistic", "Experiment 4: tuned ablation on logistic regression (sign of the return)"),
         ("highdim", "Experiment 5: larger problem with wall-clock timing"),
         ("hetero", "Experiment 6: badly scaled features (adaptive scaling's home turf)"),
+        ("nonconvex", "Experiment 7: non-convex network (no guarantees apply)"),
     )
     for key, title in ablation_blocks:
         if key not in results:
@@ -734,6 +895,9 @@ def write_tables(results: Dict[str, Any], path: Path) -> None:
             if timed:
                 header += " seconds to target |"
                 rule += "---|"
+            if ab.get("report_loss"):
+                header += " final train loss |"
+                rule += "---|"
             lines += [f"**{regime}** (noise sigma = {block['sigma']})", "", header, rule]
             for variant, r in block["variants"].items():
                 target = r["evals_to_target_median"]
@@ -746,6 +910,8 @@ def write_tables(results: Dict[str, Any], path: Path) -> None:
                 if timed:
                     secs = r["seconds_to_target_median"]
                     row += " " + ("not reached" if math.isinf(secs) else f"{secs:.2f}") + " |"
+                if ab.get("report_loss"):
+                    row += f" {r['final_loss_median']:.4f} |"
                 lines.append(row)
             lines.append("")
             if "direct_solve_seconds" in block:
@@ -813,6 +979,7 @@ def write_tables(results: Dict[str, Any], path: Path) -> None:
                 return f"{m[k]['median']:.3f} [{m[k]['q25']:.3f}, {m[k]['q75']:.3f}]"
             lines.append(f"| {label} | {c2('ic_target')} | {c2('hit_rate')} | {c2('sharpe_per_tick')} |")
         lines.append("")
+    lines += significance_lines(results)
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -834,6 +1001,7 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
         ("logistic", "logistic_curves.png", "Logistic regression on sign(return): tuned ablation"),
         ("highdim", "highdim_curves.png", "Larger least-squares problem"),
         ("hetero", "hetero_curves.png", "Least squares with badly scaled features"),
+        ("nonconvex", "nonconvex_curves.png", "Non-convex network: squared full-gradient norm"),
     ):
         if key not in results:
             continue
@@ -858,7 +1026,7 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
                 ax.set_title(f"{regime} (sigma={block['sigma']})")
                 ax.set_xlabel("wall-clock seconds (one CPU core)" if use_seconds else "sample-gradient evaluations")
                 ax.grid(alpha=0.3, which="both")
-        axes[0].set_ylabel("loss gap  f(w) - f(w*)")
+        axes[0].set_ylabel("squared full-gradient norm" if key == "nonconvex" else "loss gap  f(w) - f(w*)")
         axes[0].legend(fontsize=7)
         fig.suptitle(title)
         fig.tight_layout()
@@ -906,7 +1074,7 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default=str(REPO_ROOT / "configs" / "stochastic_regime.yaml"))
-    parser.add_argument("--only", nargs="+", type=int, choices=[1, 2, 3, 4, 5, 6], default=[1, 2, 3, 4, 5, 6])
+    parser.add_argument("--only", nargs="+", type=int, choices=[1, 2, 3, 4, 5, 6, 7], default=[1, 2, 3, 4, 5, 6, 7])
     parser.add_argument("--quick", action="store_true", help="tiny settings for a smoke test")
     parser.add_argument("--merge", action="store_true",
                         help="update results/experiments.json in place instead of overwriting it")
@@ -918,7 +1086,7 @@ def main() -> None:
     parser.add_argument("--lr-min-exp", type=float, default=-5.0)
     parser.add_argument("--lr-max-exp", type=float, default=-0.5)
     parser.add_argument("--tune-seeds", type=int, default=2)
-    parser.add_argument("--eval-seeds", type=int, default=7)
+    parser.add_argument("--eval-seeds", type=int, default=20)
     parser.add_argument("--curve-points", type=int, default=40)
     parser.add_argument("--target-ratio", type=float, default=1e-8)
     # experiment 4 (logistic)
@@ -929,7 +1097,14 @@ def main() -> None:
     parser.add_argument("--lg-batch", type=int, default=64)
     parser.add_argument("--lg-lr-points", type=int, default=9)
     parser.add_argument("--lg-tune-seeds", type=int, default=1)
-    parser.add_argument("--lg-eval-seeds", type=int, default=5)
+    parser.add_argument("--lg-eval-seeds", type=int, default=12)
+    # experiment 7 (non-convex)
+    parser.add_argument("--nc-inputs", type=int, default=16)
+    parser.add_argument("--nc-hidden", type=int, default=16)
+    parser.add_argument("--nc-epochs", type=int, default=100)
+    parser.add_argument("--nc-lr-points", type=int, default=9)
+    parser.add_argument("--nc-tune-seeds", type=int, default=2)
+    parser.add_argument("--nc-eval-seeds", type=int, default=8)
     # experiment 6 (heterogeneous feature scales)
     parser.add_argument("--het-decades", type=float, default=3.0)
     # experiment 5 (larger least squares)
@@ -949,7 +1124,7 @@ def main() -> None:
     parser.add_argument("--wf-window", type=int, default=512)
     parser.add_argument("--wf-horizon", type=int, default=64)
     parser.add_argument("--wf-budgets", nargs="+", type=int, default=[1024, 2048, 4096, 8192, 16384])
-    parser.add_argument("--wf-seeds", type=int, default=8)
+    parser.add_argument("--wf-seeds", type=int, default=20)
     args = parser.parse_args()
     if args.quick:
         args.epochs, args.lr_points, args.tune_seeds, args.eval_seeds = 10, 5, 1, 2
@@ -959,6 +1134,7 @@ def main() -> None:
         args.lg_eval_seeds = 2
         args.hd_samples, args.hd_features, args.hd_epochs, args.hd_lr_points = 4000, 20, 8, 4
         args.hd_eval_seeds = 2
+        args.nc_epochs, args.nc_lr_points, args.nc_tune_seeds, args.nc_eval_seeds = 8, 4, 1, 2
 
     cfg: Dict[str, Any] = load_config(args.config)
     results: Dict[str, Any] = {}
@@ -981,6 +1157,9 @@ def main() -> None:
     if 6 in args.only:
         print("Experiment 6: badly scaled features")
         results["hetero"] = experiment_hetero(cfg, args)
+    if 7 in args.only:
+        print("Experiment 7: non-convex network")
+        results["nonconvex"] = experiment_nonconvex(cfg, args)
 
     out_dir: Path = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
