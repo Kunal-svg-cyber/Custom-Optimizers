@@ -346,6 +346,37 @@ def test_logistic_objective_gradient_optimum_and_gap() -> None:
     assert abs(obj.gap(near) - direct) / direct < 1e-2
 
 
+def test_mlp_objective_gradient_matches_finite_differences() -> None:
+    from experiments.run_experiments import MLPRegression
+
+    rng = np.random.default_rng(0)
+    features = rng.standard_normal((40, 5))
+    targets = rng.standard_normal(40)
+    obj = MLPRegression(features, targets, hidden=4, init_seed=1)
+    w = obj.init_weights + 0.1 * rng.standard_normal(obj.d)
+    numeric = np.array([
+        (obj.loss(w + 1e-6 * e) - obj.loss(w - 1e-6 * e)) / 2e-6 for e in np.eye(obj.d)
+    ])
+    assert np.allclose(obj.full_grad(w), numeric, atol=1e-7)
+    rows = np.arange(10)
+    # mini-batch gradient on a subset equals the full-gradient formula on that subset
+    sub = MLPRegression(features[rows], targets[rows], hidden=4, init_seed=1)
+    assert np.allclose(obj.grad(w, rows), sub.full_grad(w), atol=1e-12)
+    assert abs(obj.gap(w) - float(np.sum(obj.full_grad(w) ** 2))) < 1e-12
+
+
+def test_paired_bootstrap_interval_covers_the_true_shift() -> None:
+    from experiments.run_experiments import paired_bootstrap
+
+    rng = np.random.default_rng(1)
+    diffs = 0.5 + 0.1 * rng.standard_normal(30)
+    median, low, high = paired_bootstrap(diffs.tolist())
+    assert low < 0.5 < high
+    assert low <= median <= high
+    zero_median, zlow, zhigh = paired_bootstrap((0.1 * rng.standard_normal(30)).tolist())
+    assert zlow < 0.0 < zhigh
+
+
 def test_least_squares_gap_matches_loss_difference() -> None:
     from experiments.run_experiments import LeastSquares
 
