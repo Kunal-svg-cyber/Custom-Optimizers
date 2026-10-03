@@ -170,6 +170,65 @@ Secondary metrics at the largest budget (16384):
 | Adam | 0.440 [0.378, 0.491] | 0.770 [0.747, 0.785] | 0.357 [0.297, 0.393] |
 | Coordinate SVRG | 0.440 [0.379, 0.491] | 0.771 [0.748, 0.785] | 0.352 [0.304, 0.394] |
 
+### Experiment 8: held-out evaluation (random split)
+
+8 fresh datasets per task, 5000 held-out rows each, learning rates tuned on training loss in Experiments 4 and 7. Median [IQR] over seeds. The split is random, so this measures over-optimisation, not temporal drift.
+
+**Logistic regression (volatile)**: test log-loss (lower is better), test accuracy.
+
+| Method | test log-loss | test accuracy | train loss |
+|---|---|---|---|
+| SGD + momentum | 0.68775 [0.68735, 0.69015] | 0.5414 [0.5348, 0.5459] | 0.68694 [0.68497, 0.68708] |
+| SGD + momentum, cosine lr | 0.68775 [0.68738, 0.69016] | 0.5410 [0.5340, 0.5457] | 0.68694 [0.68497, 0.68708] |
+| Adam (clamped) | 0.68776 [0.68736, 0.69015] | 0.5415 [0.5345, 0.5461] | 0.68694 [0.68497, 0.68708] |
+| Adam (clamped), cosine lr | 0.68775 [0.68738, 0.69016] | 0.5412 [0.5344, 0.5457] | 0.68694 [0.68497, 0.68708] |
+| SVRG + momentum | 0.68776 [0.68737, 0.69016] | 0.5409 [0.5344, 0.5464] | 0.68694 [0.68497, 0.68708] |
+| Coordinate SVRG (ours) | 0.68776 [0.68737, 0.69016] | 0.5409 [0.5344, 0.5464] | 0.68694 [0.68497, 0.68708] |
+| Coordinate SVRG, cosine lr (ours) | 0.68776 [0.68737, 0.69016] | 0.5409 [0.5344, 0.5464] | 0.68694 [0.68497, 0.68708] |
+
+Paired test-log-loss difference versus the best baseline by median (SGD + momentum; chosen on these same seeds, which is conservative for SVRG). Negative favours the first method.
+
+| Method | median diff | 95% CI |
+|---|---|---|
+| SVRG + momentum | +1.49e-05 | [+3.45e-06, +2.78e-05] |
+| Coordinate SVRG (ours) | +1.49e-05 | [+3.45e-06, +2.78e-05] |
+| Coordinate SVRG, cosine lr (ours) | +1.49e-05 | [+3.45e-06, +2.78e-05] |
+
+**Non-convex network (volatile)**: test loss (0.5 x MSE, lower is better; the irreducible noise floor is 0.125), train loss.
+
+| Method | test loss | train loss |
+|---|---|---|
+| SGD + momentum | 0.1363 [0.1351, 0.1416] | 0.1164 [0.1154, 0.1182] |
+| SGD + momentum, cosine lr | 0.1317 [0.1293, 0.1354] | 0.1177 [0.1166, 0.1191] |
+| Adam (clamped) | 0.1498 [0.1492, 0.1521] | 0.1097 [0.1078, 0.1108] |
+| Adam (clamped), cosine lr | 0.1466 [0.1424, 0.1473] | 0.1050 [0.1042, 0.1070] |
+| SVRG + momentum | 0.1304 [0.1278, 0.1330] | 0.1190 [0.1178, 0.1203] |
+| Coordinate SVRG (ours) | 0.1442 [0.1395, 0.1459] | 0.1081 [0.1074, 0.1090] |
+| Coordinate SVRG, cosine lr (ours) | 0.1445 [0.1425, 0.1463] | 0.1079 [0.1070, 0.1097] |
+
+Paired test-loss difference versus the best baseline by median (SGD + momentum, cosine lr). Negative favours the first method.
+
+| Method | median diff | 95% CI |
+|---|---|---|
+| SVRG + momentum | -0.0014 | [-0.0023, -0.0009] |
+| Coordinate SVRG (ours) | +0.0116 | [+0.0095, +0.0140] |
+| Coordinate SVRG, cosine lr (ours) | +0.0135 | [+0.0106, +0.0150] |
+
+### Experiment 9: snapshot interval K
+
+Coordinate SVRG on least squares (n=4096, d=32, batch 64), lr re-tuned for every interval K. 'Prop 3 ratio' = measured gradient variance at worst-case staleness divided by the Proposition 3 bound; the bound holds when it is at most 1.
+
+| K | tuned lr | lr x K | final gap, median | evals to target | seeds reaching target | max Prop 3 ratio | median Prop 3 ratio |
+|---|---|---|---|---|---|---|---|
+| 8 | 3.16e-03 | 0.03 | 4.39e-26 | 134,912 | 100% | 2.20e-04 | 3.93e-08 |
+| 16 | 3.16e-03 | 0.05 | 3.05e-31 | 84,992 | 100% | 2.04e-04 | 4.88e-08 |
+| 32 | 3.16e-03 | 0.10 | 3.02e-31 | 64,128 | 100% | 1.43e-04 | 9.24e-08 |
+| 64 | 3.16e-03 | 0.20 | 3.20e-31 | 60,800 | 100% | 6.47e-05 | 2.14e-07 |
+| 128 | 1.00e-03 | 0.13 | 3.42e-31 | 127,232 | 100% | 9.94e-05 | 2.88e-06 |
+| 256 | 1.00e-03 | 0.26 | 7.96e-24 | 123,392 | 100% | 4.12e-05 | 1.85e-08 |
+| 512 | 1.00e-03 | 0.51 | 3.47e-17 | 162,048 | 100% | 1.27e-05 | 1.63e-09 |
+| 1024 | 3.16e-04 | 0.32 | 6.62e-11 | 338,560 | 100% | 2.87e-05 | 2.09e-09 |
+
 ### Paired comparisons on held-out seeds
 
 Difference in `log10(final gap)`: **negative means the first method is better**. Median over seeds with a 95% paired bootstrap interval (resampling seeds); 'wins' counts seeds where the first method had the smaller gap. Baselines are the four non-SVRG methods; 'best baseline' is the one with the lowest median gap in that cell. Gaps at float64 round-off are floored at 1e-40.
