@@ -617,6 +617,191 @@ def preconditioned_constants(features: FloatArray) -> Dict[str, float]:
     }
 
 
+@dataclass
+class DiagSvrgResult:
+    final_gap: float
+    evals: List[float]          # cumulative sample-gradient evaluations at each epoch end
+    gaps: List[float]           # gap of the snapshot at each epoch end (index 0 = initial point)
+    diverged: bool
+
+
+def diag_precond_svrg(
+    obj: Any,
+    diag: FloatArray,
+    eta: float,
+    inner_steps: int,
+    batch_size: int,
+    budget_evals: int,
+    snapshot_rule: str,
+    seed: int,
+    sampler: Optional[DeterministicBatchSampler] = None,
+    w0: Optional[FloatArray] = None,
+) -> DiagSvrgResult:
+    """SVRG with a FROZEN diagonal preconditioner: w <- w - eta * D^{-1} g_hat.
+
+    ``snapshot_rule`` is ``"random"`` (Johnson-Zhang Option II: the next snapshot is a uniformly
+    random inner iterate, the setting of their theorem) or ``"last"`` (Option I, used by the engine).
+    With ``sampler=None`` batches are drawn uniformly with replacement (the theorem's setting).
+    """
+    n: int = obj.n
+    rng = np.random.default_rng(seed)
+    snap: FloatArray = np.zeros(obj.d) if w0 is None else np.array(w0, dtype=np.float64)
+    evals_out: List[float] = [0.0]
+    gaps_out: List[float] = [obj.gap(snap)]
+    evals: int = 0
+    step: int = 0
+    diverged: bool = False
+    while evals < budget_evals:
+        mu: FloatArray = obj.full_grad(snap)
+        evals += n
+        w: FloatArray = snap.copy()
+        iterates: List[FloatArray] = []
+        for _ in range(inner_steps):
+            rows = rng.integers(0, n, size=batch_size) if sampler is None else sampler.batch(step)
+            g: FloatArray = obj.grad(w, rows) - obj.grad(snap, rows) + mu
+            w = w - eta * g / diag
+            step += 1
+            evals += 2 * batch_size
+            if snapshot_rule == "random":
+                iterates.append(w)
+        snap = iterates[int(rng.integers(inner_steps))] if snapshot_rule == "random" else w
+        gap: float = obj.gap(snap)
+        evals_out.append(float(evals))
+        gaps_out.append(gap)
+        if not math.isfinite(gap) or gap > 1e12:
+            diverged = True
+            break
+    return DiagSvrgResult(float("inf") if diverged else gaps_out[-1], evals_out, gaps_out, diverged)
+
+
+def gaps_on_grid(evals: Sequence[float], gaps: Sequence[float], grid: Sequence[float]) -> List[float]:
+    """Gap of the last completed epoch at or before each grid point (step function)."""
+    e: FloatArray = np.asarray(evals, dtype=np.float64)
+    g: FloatArray = np.asarray(gaps, dtype=np.float64)
+    idx: npt.NDArray[np.int64] = np.searchsorted(e, np.asarray(grid, dtype=np.float64), side="right") - 1
+    return [float(g[max(i, 0)]) for i in idx]
+
+
+def theory_constants(features: FloatArray) -> Dict[str, float]:
+    """Constants for the Johnson-Zhang recipe on least squares with Jacobi D = diag(X^T X / n)."""
+    n: int = features.shape[0]
+    diag: FloatArray = np.mean(features ** 2, axis=0)
+    scaled: FloatArray = features / np.sqrt(diag)
+    l_d: float = float(np.max(np.sum(scaled ** 2, axis=1)))
+    gamma_d: float = float(np.linalg.eigvalsh(scaled.T @ scaled / float(n))[0])
+    eta: float = 0.1 / l_d
+    inner: int = int(math.ceil(50.0 * l_d / gamma_d))
+    alpha: float = 1.0 / (gamma_d * eta * (1.0 - 2.0 * l_d * eta) * inner) + 2.0 * l_d * eta / (1.0 - 2.0 * l_d * eta)
+    return {"L_D": l_d, "gamma_D": gamma_d, "eta": eta, "inner_steps": float(inner), "alpha": alpha}
+
+
+def experiment_jacobi(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    """Experiment 11: a method read off Proposition 5, with theory-prescribed hyper-parameters.
+
+    Jacobi-SVRG uses the frozen preconditioner D = diag(X^T X / n). The *theory* variant takes every
+    hyper-parameter from the Johnson-Zhang recipe (eta = 0.1 / L_D, m = 50 L_D / gamma_D, single-sample
+    steps, random-iterate snapshots): zero tuning. The *tuned* variant uses mini-batches, last-iterate
+    snapshots and a learning-rate sweep like every other method. Datasets and seeds are identical to
+    Experiments 1 and 6, so paired comparisons against their stored results are valid.
+    """
+    base: RegimeConfig = RegimeConfig.from_dict(cfg)
+    sigma: float = float(cfg["environment"]["noise_sigma_levels"]["volatile"])
+    batch_size: int = int(cfg["training"]["batch_size"])
+    interval: int = int(cfg["optimizer"]["snapshot_interval"])
+    lr_grid: FloatArray = 10.0 ** np.linspace(args.lr_min_exp, args.lr_max_exp, args.lr_points)
+    problems = (
+        ("well-scaled features", ls_factory(base), int(cfg["seed"]), "ablation"),
+        (f"badly scaled features ({args.het_decades:g} decades)",
+         scaled_ls_factory(base, args.het_decades), int(cfg["seed"]) + 7000, "hetero"),
+    )
+    out: Dict[str, Any] = {"problems": {}}
+    for name, factory, seed0, stored_key in problems:
+        tune_sets = [factory(seed0 + 1000 + i, sigma) for i in range(args.tune_seeds)]
+        eval_sets = [factory(seed0 + 2000 + i, sigma) for i in range(args.eval_seeds)]
+        for o in tune_sets + eval_sets:
+            o.prepare()
+        n: int = tune_sets[0].n
+        budget: int = int(args.epochs * n)
+        grid: FloatArray = np.geomspace(4 * n, budget, args.curve_points)
+
+        # ---- theory-prescribed: no tuning ----
+        theory_gaps: List[float] = []
+        theory_curves: List[List[float]] = []
+        to_target: List[float] = []
+        ratios: List[float] = []
+        consts_list: List[Dict[str, float]] = []
+        for i, o in enumerate(eval_sets):
+            consts = theory_constants(o.features)
+            consts_list.append(consts)
+            diag = np.mean(o.features ** 2, axis=0)
+            run = diag_precond_svrg(o, diag, consts["eta"], int(consts["inner_steps"]), 1, budget,
+                                    "random", seed=seed0 + 2000 + i)
+            theory_gaps.append(run.final_gap)
+            theory_curves.append(gaps_on_grid(run.evals, run.gaps, grid))
+            target = args.target_ratio * run.gaps[0]
+            hit = [e for e, g in zip(run.evals, run.gaps) if g <= target]
+            to_target.append(hit[0] if hit else float("inf"))
+            ratios += [b / a for a, b in zip(run.gaps[:-1], run.gaps[1:]) if a > 1e-20]
+        theory_out = {
+            "final_gaps": theory_gaps, "final_gap_median": float(np.median(theory_gaps)),
+            "evals_to_target_median": float(np.median(to_target)),
+            "curve_median": np.percentile(np.asarray(theory_curves), 50, axis=0).tolist(),
+            "curve_q25": np.percentile(np.asarray(theory_curves), 25, axis=0).tolist(),
+            "curve_q75": np.percentile(np.asarray(theory_curves), 75, axis=0).tolist(),
+            "alpha_predicted": float(np.median([c["alpha"] for c in consts_list])),
+            "kappa_D": float(np.median([c["L_D"] / c["gamma_D"] for c in consts_list])),
+            "eta": float(np.median([c["eta"] for c in consts_list])),
+            "inner_steps": int(np.median([c["inner_steps"] for c in consts_list])),
+            "mean_epoch_contraction": float(np.mean(ratios)) if ratios else float("nan"),
+            "max_epoch_contraction": float(np.max(ratios)) if ratios else float("nan"),
+            "epoch_transitions": len(ratios),
+        }
+
+        # ---- tuned: mini-batch, last iterate, lr sweep ----
+        scores: List[float] = []
+        for lr in lr_grid:
+            gaps = []
+            for j, o in enumerate(tune_sets):
+                diag = np.mean(o.features ** 2, axis=0)
+                gaps.append(diag_precond_svrg(
+                    o, diag, float(lr), interval, batch_size, budget, "last", seed=seed0 + 1000 + j,
+                    sampler=DeterministicBatchSampler(n, batch_size, seed0 + 1000 + j)).final_gap)
+            scores.append(float(np.median(gaps)))
+        best_idx = int(np.argmin(np.where(np.isfinite(scores), scores, np.inf)))
+        best_lr = float(lr_grid[best_idx])
+        tuned_gaps: List[float] = []
+        tuned_curves: List[List[float]] = []
+        to_target_t: List[float] = []
+        for i, o in enumerate(eval_sets):
+            diag = np.mean(o.features ** 2, axis=0)
+            run = diag_precond_svrg(o, diag, best_lr, interval, batch_size, budget, "last",
+                                    seed=seed0 + 2000 + i,
+                                    sampler=DeterministicBatchSampler(n, batch_size, seed0 + 2000 + i))
+            tuned_gaps.append(run.final_gap)
+            tuned_curves.append(gaps_on_grid(run.evals, run.gaps, grid))
+            target = args.target_ratio * run.gaps[0]
+            hit = [e for e, g in zip(run.evals, run.gaps) if g <= target]
+            to_target_t.append(hit[0] if hit else float("inf"))
+        tuned_out = {
+            "best_lr": best_lr, "best_lr_at_grid_edge": bool(best_idx in (0, len(lr_grid) - 1)),
+            "final_gaps": tuned_gaps, "final_gap_median": float(np.median(tuned_gaps)),
+            "evals_to_target_median": float(np.median(to_target_t)),
+            "curve_median": np.percentile(np.asarray(tuned_curves), 50, axis=0).tolist(),
+            "curve_q25": np.percentile(np.asarray(tuned_curves), 25, axis=0).tolist(),
+            "curve_q75": np.percentile(np.asarray(tuned_curves), 75, axis=0).tolist(),
+        }
+        out["problems"][name] = {
+            "stored_key": stored_key, "curve_evals": grid.tolist(),
+            "theory": theory_out, "tuned": tuned_out,
+        }
+        print(f"  [exp11] {name:<38} theory gap {fmt(theory_out['final_gap_median'])} "
+              f"(mean epoch contraction {theory_out['mean_epoch_contraction']:.3f} vs bound {theory_out['alpha_predicted']:.2f}); "
+              f"tuned gap {fmt(tuned_out['final_gap_median'])}")
+    out["description"] = ("Jacobi-preconditioned SVRG on least squares, volatile regime; datasets and seeds identical to "
+                          "Experiments 1 and 6")
+    return out
+
+
 def experiment_conditioning(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
     """Experiment 10: predicted benefit of diagonal preconditioning (Proposition 5)."""
     base: RegimeConfig = RegimeConfig.from_dict(cfg)
@@ -1038,6 +1223,24 @@ def significance_lines(results: Dict[str, Any]) -> List[str]:
                     f"| {label} / {regime} | {VARIANT_LABELS[a_name]} vs {VARIANT_LABELS[b_name]} | "
                     f"{med:+.2f} | [{lo:+.2f}, {hi:+.2f}] | {wins}/{len(diff)} |"
                 )
+    if "jacobi" in results:
+        for pname, pr in results["jacobi"]["problems"].items():
+            stored = results.get(pr["stored_key"])
+            if stored is None:
+                continue
+            v = stored["regimes"]["volatile"]["variants"]
+            best_base = min(baselines, key=lambda b: v[b]["final_gap_median"])
+            for mname, mkey in (("Jacobi SVRG (theory)", "theory"), ("Jacobi SVRG (tuned)", "tuned")):
+                mine = np.log10(np.maximum(np.asarray(pr[mkey]["final_gaps"], dtype=float), 1e-40))
+                for other in (best_base, "svrg_adam_cosine", "svrg_adam"):
+                    theirs = np.log10(np.maximum(np.asarray(v[other]["final_gaps"], dtype=float), 1e-40))
+                    if len(theirs) != len(mine):
+                        continue
+                    diff = mine - theirs
+                    med, lo, hi = paired_bootstrap(diff)
+                    lines.append(
+                        f"| Exp 11 {pname} | {mname} vs {VARIANT_LABELS[other]} | {med:+.2f} | [{lo:+.2f}, {hi:+.2f}] | "
+                        f"{int(np.sum(diff < 0))}/{len(diff)} |")
     if "walk_forward" in results:
         lines += [
             "",
@@ -1217,6 +1420,31 @@ def write_tables(results: Dict[str, Any], path: Path) -> None:
             med, lo, hi = paired_bootstrap(d)
             lines.append(f"| {VARIANT_LABELS[name]} | {med:+.4f} | [{lo:+.4f}, {hi:+.4f}] |")
         lines.append("")
+    if "jacobi" in results:
+        jc = results["jacobi"]
+        lines += [
+            "### Experiment 11: Jacobi-preconditioned SVRG with theory-prescribed hyper-parameters",
+            "",
+            f"{jc['description']}. **Theory** = every hyper-parameter from the Johnson-Zhang recipe "
+            "(`eta = 0.1 / L_D`, `m = 50 L_D / gamma_D` single-sample steps, random-iterate snapshots): zero tuning. "
+            "**Tuned** = mini-batches, last-iterate snapshots, learning rate swept like every other method. "
+            "The theorem guarantees `E[gap_s] <= alpha * gap_{s-1}` per epoch; 'observed' is the measured mean "
+            "epoch-to-epoch ratio (epochs with gap above 1e-20 only).",
+            "",
+            "| Problem | Method | median final gap | evals to target | kappa_D | predicted alpha | observed mean ratio (max) |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for pname, pr in jc["problems"].items():
+            th, tu = pr["theory"], pr["tuned"]
+            e_th, e_tu = th["evals_to_target_median"], tu["evals_to_target_median"]
+            lines.append(
+                f"| {pname} | Jacobi SVRG, theory-prescribed (no tuning) | {fmt(th['final_gap_median'])} | "
+                f"{'not reached' if math.isinf(e_th) else f'{e_th:,.0f}'} | {th['kappa_D']:.0f} | {th['alpha_predicted']:.2f} | "
+                f"{th['mean_epoch_contraction']:.3f} ({th['max_epoch_contraction']:.3f}) |")
+            lines.append(
+                f"| {pname} | Jacobi SVRG, tuned lr {tu['best_lr']:.2e}{' †' if tu['best_lr_at_grid_edge'] else ''} | "
+                f"{fmt(tu['final_gap_median'])} | {'not reached' if math.isinf(e_tu) else f'{e_tu:,.0f}'} | | | |")
+        lines.append("")
     if "conditioning" in results:
         cd = results["conditioning"]
         lines += [
@@ -1356,6 +1584,32 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
         fig.tight_layout()
         p = out_dir / "snapshot_interval.png"
         fig.savefig(p, dpi=150); plt.close(fig); written.append(str(p))
+    if "jacobi" in results:
+        probs = results["jacobi"]["problems"]
+        fig, axes = plt.subplots(1, len(probs), figsize=(5.5 * len(probs), 4), sharey=True)
+        axes = np.atleast_1d(axes)
+        for ax, (pname, pr) in zip(axes, probs.items()):
+            xs = np.asarray(pr["curve_evals"])
+            for label, key, color in (("Jacobi SVRG, theory-prescribed (no tuning)", "theory", "#2ca02c"),
+                                      ("Jacobi SVRG, tuned", "tuned", "#006400")):
+                med = np.maximum(np.asarray(pr[key]["curve_median"], dtype=float), 1e-18)
+                lo = np.maximum(np.asarray(pr[key]["curve_q25"], dtype=float), 1e-18)
+                hi = np.maximum(np.asarray(pr[key]["curve_q75"], dtype=float), 1e-18)
+                ax.plot(xs, med, label=label, color=color, lw=2)
+                ax.fill_between(xs, lo, hi, color=color, alpha=0.15)
+            stored = results.get(pr["stored_key"])
+            if stored is not None:
+                for variant in ("adam_cosine", "svrg_adam_cosine"):
+                    r = stored["regimes"]["volatile"]["variants"][variant]
+                    ax.plot(r["curve_evals"], np.maximum(np.asarray(r["curve_median"], dtype=float), 1e-18),
+                            ls="--", lw=1.5, color=colors[variant], label=VARIANT_LABELS[variant])
+            ax.set_xscale("log"); ax.set_yscale("log")
+            ax.set_title(pname); ax.set_xlabel("sample-gradient evaluations"); ax.grid(alpha=0.3, which="both")
+        axes[0].set_ylabel("loss gap  f(w) - f(w*)"); axes[0].legend(fontsize=7)
+        fig.suptitle("Jacobi-preconditioned SVRG: prescribed by theory vs tuned baselines")
+        fig.tight_layout()
+        p = out_dir / "jacobi_curves.png"
+        fig.savefig(p, dpi=150); plt.close(fig); written.append(str(p))
     return written
 
 
@@ -1365,7 +1619,7 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default=str(REPO_ROOT / "configs" / "stochastic_regime.yaml"))
-    parser.add_argument("--only", nargs="+", type=int, choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], default=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+    parser.add_argument("--only", nargs="+", type=int, choices=list(range(1, 12)), default=list(range(1, 12)))
     parser.add_argument("--quick", action="store_true", help="tiny settings for a smoke test")
     parser.add_argument("--tables-only", action="store_true",
                         help="regenerate tables.md and figures from the stored results.json, run nothing")
@@ -1487,6 +1741,9 @@ def main() -> None:
     if 10 in args.only:
         print("Experiment 10: conditioning")
         results["conditioning"] = experiment_conditioning(cfg, args)
+    if 11 in args.only:
+        print("Experiment 11: Jacobi-preconditioned SVRG")
+        results["jacobi"] = experiment_jacobi(cfg, args)
 
     out_dir: Path = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
