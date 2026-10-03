@@ -594,6 +594,51 @@ def experiment_nonconvex(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[
     return out
 
 
+def preconditioned_constants(features: FloatArray) -> Dict[str, float]:
+    """Smoothness / strong-convexity constants of least squares, raw and Jacobi-preconditioned.
+
+    Raw:        L = max_i ||x_i||^2,  gamma = lambda_min(H),  H = X^T X / n.
+    Jacobi D = diag(H):  L_D = max_i ||D^{-1/2} x_i||^2,  gamma_D = lambda_min(D^{-1/2} H D^{-1/2}).
+    The SVRG rate of Proposition 5 depends on kappa = L / gamma, so kappa_D versus kappa is
+    the predicted benefit of a (frozen) diagonal preconditioner.
+    """
+    n: int = features.shape[0]
+    hess: FloatArray = features.T @ features / float(n)
+    l_raw: float = float(np.max(np.sum(features ** 2, axis=1)))
+    gamma: float = float(np.linalg.eigvalsh(hess)[0])
+    scaled: FloatArray = features / np.sqrt(np.diag(hess))
+    hess_d: FloatArray = scaled.T @ scaled / float(n)
+    l_d: float = float(np.max(np.sum(scaled ** 2, axis=1)))
+    gamma_d: float = float(np.linalg.eigvalsh(hess_d)[0])
+    return {
+        "L": l_raw, "gamma": gamma, "kappa": l_raw / gamma,
+        "L_jacobi": l_d, "gamma_jacobi": gamma_d, "kappa_jacobi": l_d / gamma_d,
+        "kappa_ratio": (l_raw / gamma) / (l_d / gamma_d),
+    }
+
+
+def experiment_conditioning(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    """Experiment 10: predicted benefit of diagonal preconditioning (Proposition 5)."""
+    base: RegimeConfig = RegimeConfig.from_dict(cfg)
+    sigma: float = float(cfg["environment"]["noise_sigma_levels"]["volatile"])
+    seed0: int = int(cfg["seed"]) + 10000
+    out: Dict[str, Any] = {"problems": {}}
+    for name, factory in (
+        ("well-scaled features", ls_factory(base)),
+        (f"badly scaled features ({args.het_decades:g} decades)", scaled_ls_factory(base, args.het_decades)),
+    ):
+        per_seed: List[Dict[str, float]] = [
+            preconditioned_constants(factory(seed0 + i, sigma).features) for i in range(args.cond_seeds)
+        ]
+        out["problems"][name] = {
+            key: float(np.median([row[key] for row in per_seed])) for key in per_seed[0]
+        }
+        print(f"  [exp10] {name:<38} kappa {out['problems'][name]['kappa']:.3e} -> "
+              f"{out['problems'][name]['kappa_jacobi']:.3e} (x{out['problems'][name]['kappa_ratio']:.1f})")
+    out["seeds"] = args.cond_seeds
+    return out
+
+
 def experiment_snapshot_interval(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
     """Experiment 9: sensitivity to the snapshot interval K, and Proposition 3 across K."""
     base: RegimeConfig = RegimeConfig.from_dict(cfg)
@@ -1172,6 +1217,20 @@ def write_tables(results: Dict[str, Any], path: Path) -> None:
             med, lo, hi = paired_bootstrap(d)
             lines.append(f"| {VARIANT_LABELS[name]} | {med:+.4f} | [{lo:+.4f}, {hi:+.4f}] |")
         lines.append("")
+    if "conditioning" in results:
+        cd = results["conditioning"]
+        lines += [
+            "### Experiment 10: predicted benefit of diagonal preconditioning (Proposition 5)",
+            "",
+            f"Median over {cd['seeds']} datasets. `kappa = L / gamma` with `L = max_i ||x_i||^2` and `gamma = lambda_min(X^T X / n)`; "
+            "the Jacobi-preconditioned constants use `D = diag(X^T X / n)`. Proposition 5 gives SVRG's linear rate in terms of this `kappa`.",
+            "",
+            "| Problem | kappa (raw) | kappa (Jacobi) | predicted reduction |",
+            "|---|---|---|---|",
+        ]
+        for name, c in cd["problems"].items():
+            lines.append(f"| {name} | {c['kappa']:.3e} | {c['kappa_jacobi']:.3e} | {c['kappa_ratio']:.1f}x |")
+        lines.append("")
     if "snapshot_interval" in results:
         si = results["snapshot_interval"]
         lines += [
@@ -1306,7 +1365,7 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default=str(REPO_ROOT / "configs" / "stochastic_regime.yaml"))
-    parser.add_argument("--only", nargs="+", type=int, choices=[1, 2, 3, 4, 5, 6, 7, 8, 9], default=[1, 2, 3, 4, 5, 6, 7, 8, 9])
+    parser.add_argument("--only", nargs="+", type=int, choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10], default=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     parser.add_argument("--quick", action="store_true", help="tiny settings for a smoke test")
     parser.add_argument("--tables-only", action="store_true",
                         help="regenerate tables.md and figures from the stored results.json, run nothing")
@@ -1335,6 +1394,8 @@ def main() -> None:
     # experiment 8 (held-out)
     parser.add_argument("--ho-seeds", type=int, default=8)
     parser.add_argument("--ho-test", type=int, default=5000)
+    # experiment 10 (conditioning)
+    parser.add_argument("--cond-seeds", type=int, default=5)
     # experiment 9 (snapshot interval)
     parser.add_argument("--si-intervals", nargs="+", type=int, default=[8, 16, 32, 64, 128, 256, 512, 1024])
     parser.add_argument("--si-lr-points", type=int, default=7)
@@ -1381,6 +1442,7 @@ def main() -> None:
         args.ho_seeds, args.ho_test = 2, 1000
         args.si_intervals, args.si_lr_points, args.si_tune_seeds, args.si_eval_seeds = [8, 32, 128], 3, 1, 2
         args.si_probe_batches = 8
+        args.cond_seeds = 2
 
     cfg: Dict[str, Any] = load_config(args.config)
     if args.tables_only:
@@ -1422,6 +1484,9 @@ def main() -> None:
     if 9 in args.only:
         print("Experiment 9: snapshot interval")
         results["snapshot_interval"] = experiment_snapshot_interval(cfg, args)
+    if 10 in args.only:
+        print("Experiment 10: conditioning")
+        results["conditioning"] = experiment_conditioning(cfg, args)
 
     out_dir: Path = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
