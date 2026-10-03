@@ -1,6 +1,6 @@
 # Results
 
-All numbers are produced by `python -m experiments.run_experiments` (about 15 minutes on one CPU core, NumPy only)
+All numbers are produced by `python -m experiments.run_experiments` (about 17 minutes on one CPU core, NumPy only)
 and stored in `results/experiments.json`. They use the NumPy reference implementation (`src/reference_numpy.py`),
 which the PyTorch and JAX engines are tested against step for step.
 **The PyTorch/JAX engines did not produce these numbers.** Figures are in `docs/figures/`.
@@ -11,7 +11,7 @@ gradients and every full-gradient snapshot pass. Baselines include a cosine-deca
 constant-step baseline is a weak comparison for a method whose selling point is convergence at a constant step.
 Cosine-decay runs are tied to the budget (the rate reaches zero exactly at the end), so their mid-run curves are not
 comparable with constant-rate curves; compare final values. Seeds: Exp 1 and 6 use 2 tuning / 20 evaluation seeds, Exp 4
-uses 1 / 12, Exp 5 uses 1 / 3, Exp 7 uses 2 / 8, Exp 3 uses 20, Exp 8 uses 8 fresh datasets, Exp 9 uses 2 / 6, Exp 10 uses 5 datasets.
+uses 1 / 12, Exp 5 uses 1 / 3, Exp 7 uses 2 / 8, Exp 3 uses 20, Exp 8 uses 8 fresh datasets, Exp 9 uses 2 / 6, Exp 10 uses 5 datasets, Exp 11 uses 2 / 20 (same datasets as Exp 1 and 6).
 
 ![least squares](figures/ablation_curves.png)
 *(Curves bottom out at 1e-18 only because the plot clamps there; the underlying gaps are about 1e-31, i.e. float64 round-off.)*
@@ -23,6 +23,8 @@ uses 1 / 12, Exp 5 uses 1 / 3, Exp 7 uses 2 / 8, Exp 3 uses 20, Exp 8 uses 8 fre
 ![badly scaled features](figures/hetero_curves.png)
 
 ![non-convex](figures/nonconvex_curves.png)
+
+![Jacobi SVRG](figures/jacobi_curves.png)
 
 ![snapshot interval](figures/snapshot_interval.png)
 
@@ -246,6 +248,17 @@ Paired test-loss difference versus the best baseline by median (SGD + momentum, 
 | Coordinate SVRG (ours) | +0.0116 | [+0.0095, +0.0140] |
 | Coordinate SVRG, cosine lr (ours) | +0.0135 | [+0.0106, +0.0150] |
 
+### Experiment 11: Jacobi-preconditioned SVRG with theory-prescribed hyper-parameters
+
+Jacobi-preconditioned SVRG on least squares, volatile regime; datasets and seeds identical to Experiments 1 and 6. **Theory** = every hyper-parameter from the Johnson-Zhang recipe (`eta = 0.1 / L_D`, `m = 50 L_D / gamma_D` single-sample steps, random-iterate snapshots): zero tuning. **Tuned** = mini-batches, last-iterate snapshots, learning rate swept like every other method. The theorem guarantees `E[gap_s] <= alpha * gap_{s-1}` per epoch; 'observed' is the measured mean epoch-to-epoch ratio (epochs with gap above 1e-20 only).
+
+| Problem | Method | median final gap | evals to target | kappa_D | predicted alpha | observed mean ratio (max) |
+|---|---|---|---|---|---|---|
+| well-scaled features | Jacobi SVRG, theory-prescribed (no tuning) | 6.24e-30 | 75,192 | 82 | 0.50 | 0.103 (0.929) |
+| well-scaled features | Jacobi SVRG, tuned lr 5.62e-02 | 4.01e-31 | 49,152 | | | |
+| badly scaled features (3 decades) | Jacobi SVRG, theory-prescribed (no tuning) | 2.62e-29 | 73,848 | 83 | 0.50 | 0.077 (0.863) |
+| badly scaled features (3 decades) | Jacobi SVRG, tuned lr 5.62e-02 | 1.78e-29 | 49,152 | | | |
+
 ### Experiment 10: predicted benefit of diagonal preconditioning (Proposition 5)
 
 Median over 5 datasets. `kappa = L / gamma` with `L = max_i ||x_i||^2` and `gamma = lambda_min(X^T X / n)`; the Jacobi-preconditioned constants use `D = diag(X^T X / n)`. Proposition 5 gives SVRG's linear rate in terms of this `kappa`.
@@ -312,6 +325,18 @@ Difference in `log10(final gap)`: **negative means the first method is better**.
 | Exp 7 non-convex / volatile | Coordinate SVRG (ours) vs Adam (clamped), cosine lr | +1.55 | [+0.90, +1.88] | 0/8 |
 | Exp 7 non-convex / volatile | SVRG + momentum vs Adam (clamped), cosine lr | +0.36 | [-0.03, +0.62] | 2/8 |
 | Exp 7 non-convex / volatile | Coordinate SVRG (ours) vs SVRG + momentum | +1.19 | [+0.87, +1.36] | 0/8 |
+| Exp 11 well-scaled features | Jacobi SVRG (theory) vs SGD + momentum, cosine lr | -22.22 | [-22.35, -22.09] | 20/20 |
+| Exp 11 well-scaled features | Jacobi SVRG (theory) vs Coordinate SVRG, cosine lr (ours) | +1.16 | [+1.04, +1.32] | 0/20 |
+| Exp 11 well-scaled features | Jacobi SVRG (theory) vs Coordinate SVRG (ours) | +1.15 | [+1.03, +1.31] | 0/20 |
+| Exp 11 well-scaled features | Jacobi SVRG (tuned) vs SGD + momentum, cosine lr | -23.44 | [-23.53, -23.32] | 20/20 |
+| Exp 11 well-scaled features | Jacobi SVRG (tuned) vs Coordinate SVRG, cosine lr (ours) | -0.01 | [-0.03, -0.00] | 14/20 |
+| Exp 11 well-scaled features | Jacobi SVRG (tuned) vs Coordinate SVRG (ours) | -0.03 | [-0.06, +0.00] | 14/20 |
+| Exp 11 badly scaled features (3 decades) | Jacobi SVRG (theory) vs Adam (clamped), cosine lr | -23.44 | [-23.71, -23.23] | 20/20 |
+| Exp 11 badly scaled features (3 decades) | Jacobi SVRG (theory) vs Coordinate SVRG, cosine lr (ours) | -17.60 | [-18.15, -16.88] | 20/20 |
+| Exp 11 badly scaled features (3 decades) | Jacobi SVRG (theory) vs Coordinate SVRG (ours) | -25.20 | [-25.77, -24.76] | 20/20 |
+| Exp 11 badly scaled features (3 decades) | Jacobi SVRG (tuned) vs Adam (clamped), cosine lr | -23.62 | [-23.79, -23.35] | 20/20 |
+| Exp 11 badly scaled features (3 decades) | Jacobi SVRG (tuned) vs Coordinate SVRG, cosine lr (ours) | -17.63 | [-18.45, -16.92] | 20/20 |
+| Exp 11 badly scaled features (3 decades) | Jacobi SVRG (tuned) vs Coordinate SVRG (ours) | -25.54 | [-25.94, -25.00] | 20/20 |
 
 Walk-forward (Experiment 3): paired difference in out-of-sample IC versus OLS, median with 95% bootstrap interval over seeds. An interval containing 0 means no detectable difference.
 
@@ -410,6 +435,16 @@ value `kappa_D`, which is invariant to feature scales (tested). On the badly sca
 a diagonal preconditioner to fix. This matches where adaptive scaling helped (Experiment 6) and where it did not (Experiments 1, 4, 5).
 It is an explanation by consistency, not a proof about the engine, whose preconditioner is not frozen.
 
+**10. A method read off Proposition 5 beats the project's own engine on badly scaled problems, with no tuning (Experiment 11).**
+Jacobi-preconditioned SVRG with every hyper-parameter taken from the Johnson-Zhang recipe (`eta = 0.1 / L_D`, `m = 50 L_D / gamma_D`
+single-sample steps, random-iterate snapshots, guaranteed contraction 1/2 per epoch) reaches float64 round-off (median 2.6e-29) on the badly scaled
+problem on all 20 seeds. The best tuned adaptive variant (Coordinate SVRG with cosine decay) reaches 3.5e-11, so the zero-tuning method wins on 20/20 seeds
+(the decade difference is not meaningful at round-off; the win count is). To reach the 1e-8 target it needs about 74k sample-gradient evaluations against
+348k for Coordinate SVRG with cosine decay (4.7x fewer), and a tuned-lr Jacobi variant needs 49k. The measured mean contraction per epoch is 0.08 to 0.10, inside the
+guaranteed 0.5 in expectation and loose by about 5x. On well-scaled data Jacobi SVRG matches the other round-off-level methods.
+The honest framing: where the Hessian diagonal is available (linear and generalised-linear models), the simpler theory-derived method dominates the more elaborate
+adaptive engine; Coordinate SVRG's gradient-based scaling is a proxy that does not need the Hessian diagonal. The evaluation counts do not charge the one extra pass that computes `D`.
+
 ## Limitations (read before citing any number)
 
 * **Synthetic data only.** The simulator generates what the model assumes (linear hidden signal, additive noise, jumps). Nothing here is evidence of real-market performance.
@@ -417,10 +452,11 @@ It is an explanation by consistency, not a proof about the engine, whose precond
 * **Held-out checks are limited.** Experiment 8 uses a random split for logistic regression and the network only, with learning rates tuned on training loss; Experiment 3 is out-of-sample in time but uses least squares. Nothing was tuned on validation data.
 * **Sample-gradient evaluations are not wall-clock time**, and the wall-clock figures are NumPy on one CPU core, not the PyTorch/JAX engines on a GPU.
 * **Tuning cost is excluded** from the iterative timings.
+* **Jacobi SVRG needs the Hessian diagonal**, available for linear and generalised-linear models but not in general, and its theory variant (single-sample steps) is slow per evaluation in wall-clock terms. It was tested on least squares only.
 * **The adaptive variant has no convergence proof** (see `THEORY.md`, Section 4). The cosine-decay results are empirical.
 * **Uneven seed counts** (3 evaluation seeds in Experiment 5, 8 in Experiment 7) make those intervals wide. Intervals in the main tables are interquartile ranges; the paired table has bootstrap confidence intervals over seeds. No multiple-comparison correction.
 * **Some learning rates sit on the grid edge** (marked †; SVRG + momentum in several cells, SGD in the non-convex cell). The true optimum could be somewhat better, so the SVRG + momentum versus Coordinate SVRG ordering in those cells should not be over-read.
-* **The PyTorch and JAX engines have not been run by the author's sandbox**; run `pytest` to validate them against the oracle.
+* **Engine validation vs experiment numbers.** The PyTorch and JAX engines pass their tests in CI on CPU, including step-for-step agreement with the NumPy oracle (first CI run: 44 of 45, the one failure being a mis-specified fuzz-test assertion, since corrected). The experiment numbers above still come from the oracle, not from the engines, and no GPU run has been done.
 
 ## Next steps that would make the claims stronger
 

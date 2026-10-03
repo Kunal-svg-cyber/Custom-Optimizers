@@ -83,7 +83,7 @@ alpha = 1 / (gamma * eta * (1 - 2 L eta) * m)  +  2 L eta / (1 - 2 L eta)  <  1.
 
 For example, `eta = 0.1 / L` and `m = 50 L / gamma` give `alpha = 0.5`. This is *linear* convergence with constant step size, which plain SGD cannot achieve on a noisy finite sum (it needs decaying steps and converges sublinearly).
 
-This applies to the **non-adaptive** variants in the ablation (`svrg_momentum` with `beta1 = 0` is the theorem's algorithm). It is not re-proved here.
+This applies to the **non-adaptive** variants in the ablation (`svrg_momentum` with `beta1 = 0` is the theorem's algorithm). It is not re-proved here. Two gaps between the theorem and the code are worth stating: the theorem is for Option II snapshots (a uniformly random inner iterate) while the engine takes the last iterate (Option I), and it is for single-sample steps with uniform sampling while the engine uses mini-batches without replacement (a mini-batch average of `L`-smooth convex functions is `L`-smooth, so the mini-batch version is covered with the same constants, conservatively).
 
 ### Proposition 5 (SVRG with a frozen diagonal preconditioner; explains Experiment 6)
 Let `D` be a fixed positive diagonal matrix and consider the preconditioned SVRG step
@@ -107,6 +107,8 @@ So a feature with a thousand-fold larger scale inflates the *raw* `kappa` by ord
 `kappa_D` not at all. Experiment 10 measures this: on the badly scaled problem of Experiment 6, `kappa` falls from about
 1e7 to about 80, while on equal-variance features it does not move (81 to 82). That matches Experiment 6, where adaptive scaling
 helped by orders of magnitude, and Experiments 1, 4 and 5, where it did not help.
+
+**Tested directly (Experiment 11).** Taking every hyper-parameter from the Johnson-Zhang recipe with `D = diag(X^T X / n)` (`eta = 0.1 / L_D`, `m = ceil(50 L_D / gamma_D)`, single-sample steps, random-iterate snapshots, so `alpha = 1/2`) and **no tuning**, the measured mean epoch-to-epoch contraction of the gap was 0.08 to 0.10, inside the guaranteed 0.5 in expectation (individual epochs reached 0.86 to 0.93, which the in-expectation guarantee permits). The method reached float64 round-off on all 20 seeds of both the well-scaled and the badly scaled problem. It beat the best tuned adaptive variant on badly scaled features on 20/20 seeds (see `RESULTS.md`). The proposition therefore predicted a method, with its hyper-parameters, that outperformed the project's more elaborate engine.
 
 **What it does not say.** The engine's preconditioner `diag(sqrt(v_hat_t))` is **not frozen** and tracks *gradient* scale, not
 Hessian-diagonal scale; the proposition covers the frozen-diagonal idealisation only. The link to the actual adaptive engine is an
