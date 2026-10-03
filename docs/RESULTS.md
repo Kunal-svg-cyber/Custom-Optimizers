@@ -1,6 +1,6 @@
 # Results
 
-All numbers are produced by `python -m experiments.run_experiments` (about 10 minutes on one CPU core, NumPy only)
+All numbers are produced by `python -m experiments.run_experiments` (about 12 minutes on one CPU core, NumPy only)
 and stored in `results/experiments.json`. They use the NumPy reference implementation (`src/reference_numpy.py`),
 which the PyTorch and JAX engines are tested against step for step.
 **The PyTorch/JAX engines did not produce these numbers.** Figures are in `docs/figures/`.
@@ -11,7 +11,7 @@ gradients and every full-gradient snapshot pass. Baselines include a cosine-deca
 constant-step baseline is a weak comparison for a method whose selling point is convergence at a constant step.
 Cosine-decay runs are tied to the budget (the rate reaches zero exactly at the end), so their mid-run curves are not
 comparable with constant-rate curves; compare final values. Seeds: Exp 1 and 6 use 2 tuning / 20 evaluation seeds, Exp 4
-uses 1 / 12, Exp 5 uses 1 / 3, Exp 7 uses 2 / 8, Exp 3 uses 20.
+uses 1 / 12, Exp 5 uses 1 / 3, Exp 7 uses 2 / 8, Exp 3 uses 20, Exp 8 uses 8 fresh datasets, Exp 9 uses 2 / 6.
 
 ![least squares](figures/ablation_curves.png)
 *(Curves bottom out at 1e-18 only because the plot clamps there; the underlying gaps are about 1e-31, i.e. float64 round-off.)*
@@ -23,6 +23,8 @@ uses 1 / 12, Exp 5 uses 1 / 3, Exp 7 uses 2 / 8, Exp 3 uses 20.
 ![badly scaled features](figures/hetero_curves.png)
 
 ![non-convex](figures/nonconvex_curves.png)
+
+![snapshot interval](figures/snapshot_interval.png)
 
 ![variance](figures/variance_decay.png)
 
@@ -200,6 +202,65 @@ Secondary metrics at the largest budget (16384):
 | Adam | 0.440 [0.378, 0.491] | 0.770 [0.747, 0.785] | 0.357 [0.297, 0.393] |
 | Coordinate SVRG | 0.440 [0.379, 0.491] | 0.771 [0.748, 0.785] | 0.352 [0.304, 0.394] |
 
+### Experiment 8: held-out evaluation (random split)
+
+8 fresh datasets per task, 5000 held-out rows each, learning rates tuned on training loss in Experiments 4 and 7. Median [IQR] over seeds. The split is random, so this measures over-optimisation, not temporal drift.
+
+**Logistic regression (volatile)**: test log-loss (lower is better), test accuracy.
+
+| Method | test log-loss | test accuracy | train loss |
+|---|---|---|---|
+| SGD + momentum | 0.68775 [0.68735, 0.69015] | 0.5414 [0.5348, 0.5459] | 0.68694 [0.68497, 0.68708] |
+| SGD + momentum, cosine lr | 0.68775 [0.68738, 0.69016] | 0.5410 [0.5340, 0.5457] | 0.68694 [0.68497, 0.68708] |
+| Adam (clamped) | 0.68776 [0.68736, 0.69015] | 0.5415 [0.5345, 0.5461] | 0.68694 [0.68497, 0.68708] |
+| Adam (clamped), cosine lr | 0.68775 [0.68738, 0.69016] | 0.5412 [0.5344, 0.5457] | 0.68694 [0.68497, 0.68708] |
+| SVRG + momentum | 0.68776 [0.68737, 0.69016] | 0.5409 [0.5344, 0.5464] | 0.68694 [0.68497, 0.68708] |
+| Coordinate SVRG (ours) | 0.68776 [0.68737, 0.69016] | 0.5409 [0.5344, 0.5464] | 0.68694 [0.68497, 0.68708] |
+| Coordinate SVRG, cosine lr (ours) | 0.68776 [0.68737, 0.69016] | 0.5409 [0.5344, 0.5464] | 0.68694 [0.68497, 0.68708] |
+
+Paired test-log-loss difference versus the best baseline by median (SGD + momentum; chosen on these same seeds, which is conservative for SVRG). Negative favours the first method.
+
+| Method | median diff | 95% CI |
+|---|---|---|
+| SVRG + momentum | +1.49e-05 | [+3.45e-06, +2.78e-05] |
+| Coordinate SVRG (ours) | +1.49e-05 | [+3.45e-06, +2.78e-05] |
+| Coordinate SVRG, cosine lr (ours) | +1.49e-05 | [+3.45e-06, +2.78e-05] |
+
+**Non-convex network (volatile)**: test loss (0.5 x MSE, lower is better; the irreducible noise floor is 0.125), train loss.
+
+| Method | test loss | train loss |
+|---|---|---|
+| SGD + momentum | 0.1363 [0.1351, 0.1416] | 0.1164 [0.1154, 0.1182] |
+| SGD + momentum, cosine lr | 0.1317 [0.1293, 0.1354] | 0.1177 [0.1166, 0.1191] |
+| Adam (clamped) | 0.1498 [0.1492, 0.1521] | 0.1097 [0.1078, 0.1108] |
+| Adam (clamped), cosine lr | 0.1466 [0.1424, 0.1473] | 0.1050 [0.1042, 0.1070] |
+| SVRG + momentum | 0.1304 [0.1278, 0.1330] | 0.1190 [0.1178, 0.1203] |
+| Coordinate SVRG (ours) | 0.1442 [0.1395, 0.1459] | 0.1081 [0.1074, 0.1090] |
+| Coordinate SVRG, cosine lr (ours) | 0.1445 [0.1425, 0.1463] | 0.1079 [0.1070, 0.1097] |
+
+Paired test-loss difference versus the best baseline by median (SGD + momentum, cosine lr). Negative favours the first method.
+
+| Method | median diff | 95% CI |
+|---|---|---|
+| SVRG + momentum | -0.0014 | [-0.0023, -0.0009] |
+| Coordinate SVRG (ours) | +0.0116 | [+0.0095, +0.0140] |
+| Coordinate SVRG, cosine lr (ours) | +0.0135 | [+0.0106, +0.0150] |
+
+### Experiment 9: snapshot interval K
+
+Coordinate SVRG on least squares (n=4096, d=32, batch 64), lr re-tuned for every interval K. 'Prop 3 ratio' = measured gradient variance at worst-case staleness divided by the Proposition 3 bound; the bound holds when it is at most 1.
+
+| K | tuned lr | lr x K | final gap, median | evals to target | seeds reaching target | max Prop 3 ratio | median Prop 3 ratio |
+|---|---|---|---|---|---|---|---|
+| 8 | 3.16e-03 | 0.03 | 4.39e-26 | 134,912 | 100% | 2.20e-04 | 3.93e-08 |
+| 16 | 3.16e-03 | 0.05 | 3.05e-31 | 84,992 | 100% | 2.04e-04 | 4.88e-08 |
+| 32 | 3.16e-03 | 0.10 | 3.02e-31 | 64,128 | 100% | 1.43e-04 | 9.24e-08 |
+| 64 | 3.16e-03 | 0.20 | 3.20e-31 | 60,800 | 100% | 6.47e-05 | 2.14e-07 |
+| 128 | 1.00e-03 | 0.13 | 3.42e-31 | 127,232 | 100% | 9.94e-05 | 2.88e-06 |
+| 256 | 1.00e-03 | 0.26 | 7.96e-24 | 123,392 | 100% | 4.12e-05 | 1.85e-08 |
+| 512 | 1.00e-03 | 0.51 | 3.47e-17 | 162,048 | 100% | 1.27e-05 | 1.63e-09 |
+| 1024 | 3.16e-04 | 0.32 | 6.62e-11 | 338,560 | 100% | 2.87e-05 | 2.09e-09 |
+
 ### Paired comparisons on held-out seeds
 
 Difference in `log10(final gap)`: **negative means the first method is better**. Median over seeds with a 95% paired bootstrap interval (resampling seeds); 'wins' counts seeds where the first method had the smaller gap. Baselines are the four non-SVRG methods; 'best baseline' is the one with the lowest median gap in that cell. Gaps at float64 round-off are floored at 1e-40.
@@ -289,12 +350,15 @@ costs accuracy at a constant rate. So the adaptive component is a conditional be
 badly scaled data (variance reduction, adaptive scaling and a decaying rate together) is not the one that wins on
 well-scaled data (variance reduction with plain momentum).
 
-**3. Non-convex network (Experiment 7): sharper stationarity, not a better fit.**
-No theory applies here. Coordinate SVRG with cosine decay reaches a squared full-gradient norm of 2e-7 versus 4e-6 for the best
-baseline, Adam with cosine decay (1.3 decades lower, 8 of 8 seeds). But learning rates were tuned on training loss, and
-Adam with cosine decay reaches the **lower** final training loss (0.1058 versus 0.1085). So SVRG converges more precisely to a
-stationary point, not to a better one, and no held-out data was used, so a lower training loss need not mean better
-generalisation either way. This is a single small network on one synthetic task.
+**3. Non-convex network (Experiments 7 and 8): sharper stationarity, but worse held-out loss for the adaptive variants.**
+No theory applies here. On training data, Coordinate SVRG with cosine decay reaches a squared full-gradient norm of 2e-7 versus
+4e-6 for the best baseline, Adam with cosine decay (1.3 decades lower, 8 of 8 seeds). But on a held-out split (Experiment 8,
+learning rates tuned on training loss), the adaptive SVRG variants have the *lowest training loss and the highest test loss*:
+test loss 0.1445 versus 0.1317 for the best baseline (SGD + momentum with cosine decay), a paired difference of +0.0135
+(95% CI [+0.0106, +0.0150]); the irreducible noise floor is 0.125. They fit the training noise harder. The one SVRG variant that
+beats the best baseline on held-out loss is SVRG + momentum, by a small margin (-0.0014, CI [-0.0023, -0.0009]). So on a noisy
+non-convex fit, optimising more precisely is not better; regularisation or early stopping is the lever. Learning rates here were tuned on
+training loss, not validation loss, which favours methods that fit hardest; a validation-tuned comparison could rank them differently.
 
 **4. Wall-clock: no win over a direct solve at this size.**
 On the larger problem (`n = 40000`, `d = 200`), SVRG + momentum reaches the 1e-8 target in a median of 0.083 s on one NumPy core.
@@ -314,11 +378,27 @@ against a spread of about 0.08 across datasets. Adam is marginally better than O
 implicit regularisation of early stopping) and SVRG is marginally worse at small budgets (-0.0040 at 1,024) and indistinguishable
 at 16,384. SVRG never beats Adam at any budget. This test supplies **no evidence that SVRG improves signal tracking**.
 
+**7. Held-out logistic regression (Experiment 8): all methods are statistically indistinguishable in practice.**
+Every method reaches the same training loss (0.68694) and the same held-out log-loss (0.68775 to 0.68776), at about 54% test
+accuracy. The sign of the return is almost unpredictable in this regime, and the L2 penalty makes the optimum unique, so precise
+optimisation has nothing left to buy. The paired differences are about 1.5e-5 in log-loss (the least-converged baseline is
+nominally *better*, CI [+3.5e-6, +2.8e-5] for SVRG minus baseline), which is negligible. Convergence precision does not translate into held-out
+performance on this task.
+
+**8. Snapshot interval (Experiment 9): a broad optimum, and a valid but very loose bound.**
+Evaluations to the 1e-8 target are U-shaped in K: 61k at K = 64, 64k at K = 32, 85k at K = 16, 135k at K = 8 (snapshot passes
+dominate), 127k at K = 128 and 123k at K = 256, 162k at K = 512, and 339k at K = 1024 (stale snapshots; the run no longer reaches
+round-off). Any K from 16 to 256 is within about 2x of the best. The learning rate retuned for each K falls from 3e-3 to 3e-4
+as K grows, and `lr x K` stays between about 0.1 and 0.5 for K of 32 and above, which is consistent with the form of Proposition 3
+(variance proportional to `(lr x K)^2`); the 7-point learning-rate grid is coarse, so I do not claim more than consistency.
+Proposition 3 held at every K, but measured variance was at most 2.2e-4 of the bound (typically 1e-7), so the bound is safe but loose by
+three to seven orders of magnitude and cannot be used to pick K tightly.
+
 ## Limitations (read before citing any number)
 
 * **Synthetic data only.** The simulator generates what the model assumes (linear hidden signal, additive noise, jumps). Nothing here is evidence of real-market performance.
 * **Small models, modest scale.** The largest problem is `n = 40000`, `d = 200`, and a direct solve is as fast as any iterative method on it. The non-convex case is one 289-parameter network. No deep-learning results; variance reduction is known to help much less there (Defazio & Bottou, 2019).
-* **Training metrics only.** No held-out evaluation of the fitted models was done in Experiments 1 to 7 (Experiment 3 is the exception and is out-of-sample).
+* **Held-out checks are limited.** Experiment 8 uses a random split for logistic regression and the network only, with learning rates tuned on training loss; Experiment 3 is out-of-sample in time but uses least squares. Nothing was tuned on validation data.
 * **Sample-gradient evaluations are not wall-clock time**, and the wall-clock figures are NumPy on one CPU core, not the PyTorch/JAX engines on a GPU.
 * **Tuning cost is excluded** from the iterative timings.
 * **The adaptive variant has no convergence proof** (see `THEORY.md`, Section 4). The cosine-decay results are empirical.
@@ -329,6 +409,6 @@ at 16,384. SVRG never beats Adam at any budget. This test supplies **no evidence
 ## Next steps that would make the claims stronger
 
 1. Run the PyTorch engine on a GPU on a problem large enough that wall-clock favours iterative methods, and report time to target including tuning.
-2. Held-out evaluation for the logistic and non-convex experiments.
-3. Ablate the snapshot interval against the Proposition 3 design rule.
+2. Re-run Experiment 8 with learning rates and stopping points tuned on validation loss.
+3. Tighten Proposition 3 (its bound is loose by orders of magnitude in practice).
 4. Attempt the conjecture in `THEORY.md` Section 4, or construct a counterexample.
