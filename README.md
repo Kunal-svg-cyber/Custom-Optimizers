@@ -12,7 +12,9 @@ honest account of what the evidence does and does not show.
 |---|---|
 | On well-scaled convex problems, variance reduction dominates: SVRG variants reach float64 round-off and win against the best tuned Adam / SGD-momentum (constant and cosine-decay lr) on 20/20 (least squares) and 12/12 (logistic) held-out seeds in every noise regime | Experiments 1, 4 |
 | Adaptive scaling is conditional: it helps on badly scaled features (1.5 decades better than SVRG + momentum, 95% CI [-2.0, -1.1], 20/20 seeds) and hurts on a larger well-scaled problem. With variance reduction and lr decay it beats tuned Adam + cosine by 5.3 decades there | Experiments 5, 6 |
-| Non-convex network: SVRG reaches a sharper stationary point (1.3 decades smaller gradient norm, 8/8 seeds) but not a lower training loss than Adam + cosine decay | Experiment 7 |
+| Non-convex network: SVRG reaches a sharper stationary point (1.3 decades smaller gradient norm, 8/8 seeds), but on held-out data the adaptive variants generalise *worse* (+0.0135 test loss, CI [+0.0106, +0.0150]); optimisation precision is not the lever on a noisy fit | Experiments 7, 8 |
+| Held-out logistic regression: all methods are indistinguishable (test log-loss 0.68775 to 0.68776, ~54% accuracy) | Experiment 8 |
+| Snapshot interval: broad optimum (any K from 16 to 256 within about 2x of the best); Proposition 3 holds at every K but is loose by 3 to 7 orders of magnitude | Experiment 9 |
 | Gradient variance falls about 1e15x along the trajectory while SGD variance stays flat, and stays under the proved bounds in 25/25 probes | Experiment 2, Lemma 2, Proposition 3 |
 | No wall-clock win over a direct solve at `n = 40000`, `d = 200` (normal equations 0.06 s vs SVRG 0.08 s) | Experiment 5 |
 | Walk-forward signal tracking: differences from OLS are at most 0.005 in IC, none favouring SVRG over Adam | Experiment 3 (null result for SVRG) |
@@ -40,7 +42,7 @@ w    <- w - lr * clip( m_hat / max(sqrt(v_hat), floor), +-update_clip )
 ```bash
 pip install -r requirements.txt
 python -m pytest tests/ -v                       # invariants + oracle + differential tests
-python -m experiments.run_experiments            # regenerates results/ and docs/figures/ (~10 min, CPU)
+python -m experiments.run_experiments            # regenerates results/ and docs/figures/ (~12 min, CPU)
 python -m benchmarks.compare_optimizers --device cuda --wandb-mode online   # torch engine on a T4
 ```
 
@@ -55,7 +57,7 @@ src/torch_optimizer.py            stateful PyTorch engine (flat contiguous memor
 src/jax_optimizer.py              stateless JAX engine (PyTree state, jax.jit)
 src/reference_numpy.py            independent NumPy oracle + 2x2 ablation switches
 tests/test_math.py                invariant tests, theory checks, engine-vs-oracle differential tests
-experiments/run_experiments.py    seven experiments with paired-bootstrap statistics (NumPy only)
+experiments/run_experiments.py    nine experiments with paired-bootstrap statistics (NumPy only)
 benchmarks/compare_optimizers.py  torch engine vs Adam / SGD, logged to Weights & Biases
 docs/THEORY.md                    lemmas with proofs, cited theorem, open questions
 docs/RESULTS.md                   tables, figures, interpretation, limitations
