@@ -1,6 +1,6 @@
 # Results
 
-All numbers are produced by `python -m experiments.run_experiments` (about 12 minutes on one CPU core, NumPy only)
+All numbers are produced by `python -m experiments.run_experiments` (about 15 minutes on one CPU core, NumPy only)
 and stored in `results/experiments.json`. They use the NumPy reference implementation (`src/reference_numpy.py`),
 which the PyTorch and JAX engines are tested against step for step.
 **The PyTorch/JAX engines did not produce these numbers.** Figures are in `docs/figures/`.
@@ -11,7 +11,7 @@ gradients and every full-gradient snapshot pass. Baselines include a cosine-deca
 constant-step baseline is a weak comparison for a method whose selling point is convergence at a constant step.
 Cosine-decay runs are tied to the budget (the rate reaches zero exactly at the end), so their mid-run curves are not
 comparable with constant-rate curves; compare final values. Seeds: Exp 1 and 6 use 2 tuning / 20 evaluation seeds, Exp 4
-uses 1 / 12, Exp 5 uses 1 / 3, Exp 7 uses 2 / 8, Exp 3 uses 20, Exp 8 uses 8 fresh datasets, Exp 9 uses 2 / 6.
+uses 1 / 12, Exp 5 uses 1 / 3, Exp 7 uses 2 / 8, Exp 3 uses 20, Exp 8 uses 8 fresh datasets, Exp 9 uses 2 / 6, Exp 10 uses 5 datasets.
 
 ![least squares](figures/ablation_curves.png)
 *(Curves bottom out at 1e-18 only because the plot clamps there; the underlying gaps are about 1e-31, i.e. float64 round-off.)*
@@ -246,6 +246,15 @@ Paired test-loss difference versus the best baseline by median (SGD + momentum, 
 | Coordinate SVRG (ours) | +0.0116 | [+0.0095, +0.0140] |
 | Coordinate SVRG, cosine lr (ours) | +0.0135 | [+0.0106, +0.0150] |
 
+### Experiment 10: predicted benefit of diagonal preconditioning (Proposition 5)
+
+Median over 5 datasets. `kappa = L / gamma` with `L = max_i ||x_i||^2` and `gamma = lambda_min(X^T X / n)`; the Jacobi-preconditioned constants use `D = diag(X^T X / n)`. Proposition 5 gives SVRG's linear rate in terms of this `kappa`.
+
+| Problem | kappa (raw) | kappa (Jacobi) | predicted reduction |
+|---|---|---|---|
+| well-scaled features | 8.128e+01 | 8.218e+01 | 1.0x |
+| badly scaled features (3 decades) | 1.085e+07 | 8.218e+01 | 132931.7x |
+
 ### Experiment 9: snapshot interval K
 
 Coordinate SVRG on least squares (n=4096, d=32, batch 64), lr re-tuned for every interval K. 'Prop 3 ratio' = measured gradient variance at worst-case staleness divided by the Proposition 3 bound; the bound holds when it is at most 1.
@@ -393,6 +402,13 @@ as K grows, and `lr x K` stays between about 0.1 and 0.5 for K of 32 and above, 
 (variance proportional to `(lr x K)^2`); the 7-point learning-rate grid is coarse, so I do not claim more than consistency.
 Proposition 3 held at every K, but measured variance was at most 2.2e-4 of the bound (typically 1e-7), so the bound is safe but loose by
 three to seven orders of magnitude and cannot be used to pick K tightly.
+
+**9. The conditioning numbers explain which problems adaptive scaling helps (Experiment 10, Proposition 5).**
+SVRG's linear rate depends on `kappa = L / gamma`. A frozen Jacobi (diagonal) preconditioner replaces it with the correlation-matrix
+value `kappa_D`, which is invariant to feature scales (tested). On the badly scaled problem of Experiment 6, `kappa` falls from about
+1.1e7 to about 82, a reduction of five orders of magnitude; on equal-variance features it is 81 before and 82 after, so there is nothing for
+a diagonal preconditioner to fix. This matches where adaptive scaling helped (Experiment 6) and where it did not (Experiments 1, 4, 5).
+It is an explanation by consistency, not a proof about the engine, whose preconditioner is not frozen.
 
 ## Limitations (read before citing any number)
 

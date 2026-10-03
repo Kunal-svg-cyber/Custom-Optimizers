@@ -3,7 +3,7 @@
 This note separates three kinds of statements so a reader can audit them:
 
 * **Proved here** (short proofs included, checked numerically in `tests/` and `experiments/`).
-* **Cited** (known results; stated precisely, not re-proved).
+* **Cited** (known results; stated precisely, not re-proved). Proposition 5 is a short corollary of a cited theorem and says so.
 * **Open / empirical** (observed, no theorem claimed).
 
 ## 1. Setting and notation
@@ -85,6 +85,34 @@ For example, `eta = 0.1 / L` and `m = 50 L / gamma` give `alpha = 0.5`. This is 
 
 This applies to the **non-adaptive** variants in the ablation (`svrg_momentum` with `beta1 = 0` is the theorem's algorithm). It is not re-proved here.
 
+### Proposition 5 (SVRG with a frozen diagonal preconditioner; explains Experiment 6)
+Let `D` be a fixed positive diagonal matrix and consider the preconditioned SVRG step
+`w <- w - eta * D^{-1} g_hat`, with `g_hat` the usual variance-reduced gradient. Define the rescaled problem
+`f~_i(u) = f_i(D^{-1/2} u)`, `F~(u) = F(D^{-1/2} u)`. Suppose each `f~_i` is `L_D`-smooth, i.e.
+`lambda_max(D^{-1/2} Hess f_i D^{-1/2}) <= L_D`, and `F~` is `gamma_D`-strongly convex. Then the Johnson–Zhang theorem
+(Section 3) applies verbatim with `(L_D, gamma_D)`:
+
+```
+E[F(w~_s) - F(w*)]  <=  alpha_D^s * (F(w~_0) - F(w*)),
+alpha_D = 1 / (gamma_D * eta * (1 - 2 L_D eta) * m)  +  2 L_D eta / (1 - 2 L_D eta).
+```
+
+*Proof.* Put `u = D^{1/2} w`. Then `grad f~_i(u) = D^{-1/2} grad f_i(w)`, so the SVRG estimator in `u`-coordinates is `D^{-1/2} g_hat`, and the plain SVRG step `u <- u - eta * (D^{-1/2} g_hat)` is exactly `D^{1/2}` applied to the preconditioned step in `w`. The two iterations are the same sequence in different coordinates (this is checked numerically in `tests/test_math.py`), and `F~(u) = F(w)`, so the function values coincide. The hypotheses are the theorem's hypotheses for `{f~_i}`. ∎
+
+**What it says.** The rate depends on the *preconditioned* condition number `kappa_D = L_D / gamma_D`. For least squares,
+`L_D = max_i ||D^{-1/2} x_i||^2` and `gamma_D = lambda_min(D^{-1/2} H D^{-1/2})` with `H = X^T X / n`. With the Jacobi choice
+`D = diag(H)`, `kappa_D` is invariant to rescaling any feature column, because `D^{-1/2} H D^{-1/2}` is the correlation matrix of the
+features. Jacobi scaling is within a factor of the dimension `d` of the best possible diagonal scaling (van der Sluis, 1969).
+So a feature with a thousand-fold larger scale inflates the *raw* `kappa` by orders of magnitude and the preconditioned
+`kappa_D` not at all. Experiment 10 measures this: on the badly scaled problem of Experiment 6, `kappa` falls from about
+1e7 to about 80, while on equal-variance features it does not move (81 to 82). That matches Experiment 6, where adaptive scaling
+helped by orders of magnitude, and Experiments 1, 4 and 5, where it did not help.
+
+**What it does not say.** The engine's preconditioner `diag(sqrt(v_hat_t))` is **not frozen** and tracks *gradient* scale, not
+Hessian-diagonal scale; the proposition covers the frozen-diagonal idealisation only. The link to the actual adaptive engine is an
+empirical consistency, not a theorem. It also explains why a *constant-rate* adaptive method plateaus while a fixed preconditioner would
+not (the proposition's preconditioner does not renormalise as the gradient shrinks).
+
 ## 4. What is open (no claim made)
 
 **The adaptive variant has no convergence theorem here.** The update is `w <- w - lr * clip(m_hat / max(sqrt(v_hat), floor), ±c)`. Two known difficulties apply:
@@ -108,3 +136,4 @@ Empirically (see `docs/RESULTS.md`), Coordinate SVRG at a constant rate converge
 6. A. Defazio, F. Bach, S. Lacoste-Julien. *SAGA: A Fast Incremental Gradient Method With Support for Non-Strongly Convex Composite Objectives.* NeurIPS 2014.
 7. L. Nguyen, J. Liu, K. Scheinberg, M. Takáč. *SARAH: A Novel Method for Machine Learning Problems Using Stochastic Recursive Gradient.* ICML 2017.
 8. Z. Allen-Zhu. *Katyusha: The First Direct Acceleration of Stochastic Gradient Methods.* STOC 2017.
+9. A. van der Sluis. *Condition numbers and equilibration of matrices.* Numerische Mathematik 14, 1969.
