@@ -4,7 +4,7 @@ A from-scratch variance-reduced optimizer with adaptive coordinate scaling, in t
 validated against an independent NumPy oracle, with a written theory note, a tuned ablation, and an
 honest account of what the evidence does and does not show.
 
-**Start here:** [`docs/THEORY.md`](docs/THEORY.md) (what is proved, cited, open) and [`docs/RESULTS.md`](docs/RESULTS.md) (experiments and limitations).
+**Start here:** [`paper/technical_report.pdf`](paper/technical_report.pdf) (7-page technical report), [`docs/THEORY.md`](docs/THEORY.md) (what is proved, cited, open) and [`docs/RESULTS.md`](docs/RESULTS.md) (experiments and limitations).
 
 ## Headline findings (synthetic testbeds; see `docs/RESULTS.md` for protocol, paired statistics and caveats)
 
@@ -15,6 +15,7 @@ honest account of what the evidence does and does not show.
 | Non-convex network: SVRG reaches a sharper stationary point (1.3 decades smaller gradient norm, 8/8 seeds), but on held-out data the adaptive variants generalise *worse* (+0.0135 test loss, CI [+0.0106, +0.0150]); optimisation precision is not the lever on a noisy fit | Experiments 7, 8 |
 | Held-out logistic regression: all methods are indistinguishable (test log-loss 0.68775 to 0.68776, ~54% accuracy) | Experiment 8 |
 | Snapshot interval: broad optimum (any K from 16 to 256 within about 2x of the best); Proposition 3 holds at every K but is loose by 3 to 7 orders of magnitude | Experiment 9 |
+| The conditioning numbers predict where adaptive scaling helps: Jacobi scaling cuts kappa from about 1.1e7 to about 82 on badly scaled features and not at all on equal-variance features (Proposition 5, a corollary of the Johnson-Zhang theorem) | Experiment 10 |
 | Gradient variance falls about 1e15x along the trajectory while SGD variance stays flat, and stays under the proved bounds in 25/25 probes | Experiment 2, Lemma 2, Proposition 3 |
 | No wall-clock win over a direct solve at `n = 40000`, `d = 200` (normal equations 0.06 s vs SVRG 0.08 s) | Experiment 5 |
 | Walk-forward signal tracking: differences from OLS are at most 0.005 in IC, none favouring SVRG over Adam | Experiment 3 (null result for SVRG) |
@@ -41,12 +42,12 @@ w    <- w - lr * clip( m_hat / max(sqrt(v_hat), floor), +-update_clip )
 
 ```bash
 pip install -r requirements.txt
-python -m pytest tests/ -v                       # invariants + oracle + differential tests
-python -m experiments.run_experiments            # regenerates results/ and docs/figures/ (~12 min, CPU)
+python -m pytest tests/ -v                       # invariants, oracle, differential and fuzz tests
+python -m experiments.run_experiments            # regenerates results/ and docs/figures/ (~15 min, CPU)
 python -m benchmarks.compare_optimizers --device cuda --wandb-mode online   # torch engine on a T4
 ```
 
-`notebooks/colab_runner.ipynb` does all of this on a Colab T4 (edit `REPO_URL` first).
+`notebooks/colab_runner.ipynb` does all of this on a Colab T4 (edit `REPO_URL` first). `make test`, `make experiments`, `make report` wrap the same commands. A GitHub Actions workflow (`.github/workflows/tests.yml`) runs the test suite on CPU PyTorch and JAX for every push, so the engine tests run automatically once the repository is on GitHub.
 
 ## Repository layout
 
@@ -57,8 +58,10 @@ src/torch_optimizer.py            stateful PyTorch engine (flat contiguous memor
 src/jax_optimizer.py              stateless JAX engine (PyTree state, jax.jit)
 src/reference_numpy.py            independent NumPy oracle + 2x2 ablation switches
 tests/test_math.py                invariant tests, theory checks, engine-vs-oracle differential tests
-experiments/run_experiments.py    nine experiments with paired-bootstrap statistics (NumPy only)
+experiments/run_experiments.py    ten experiments with paired-bootstrap statistics (NumPy only)
 benchmarks/compare_optimizers.py  torch engine vs Adam / SGD, logged to Weights & Biases
+paper/technical_report.tex/.pdf   7-page report; every number is a macro generated from results/experiments.json
+paper/make_numbers.py             results JSON -> LaTeX macros and tables
 docs/THEORY.md                    lemmas with proofs, cited theorem, open questions
 docs/RESULTS.md                   tables, figures, interpretation, limitations
 results/                          raw JSON + tables from the last run
