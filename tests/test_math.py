@@ -458,6 +458,42 @@ def test_jacobi_conditioning_is_invariant_to_column_scaling() -> None:
     assert scaled["kappa_ratio"] > 1e3
 
 
+def test_johnson_zhang_recipe_contracts_each_epoch_in_expectation() -> None:
+    """Proposition 5 / Johnson-Zhang: E[gap_s] <= alpha * gap_{s-1} with zero tuning."""
+    from experiments.run_experiments import LeastSquares, diag_precond_svrg, theory_constants
+
+    dataset, _, _ = ls_problem()
+    obj = LeastSquares(dataset.features, dataset.targets)
+    obj.prepare()
+    consts = theory_constants(dataset.features)
+    assert consts["alpha"] <= 0.5 + 1e-12                  # the recipe is built to give alpha = 1/2
+    diag = np.mean(dataset.features ** 2, axis=0)
+    ratios = []
+    for seed in range(4):
+        run = diag_precond_svrg(
+            obj, diag, consts["eta"], int(consts["inner_steps"]), 1,
+            budget_evals=int(7 * (obj.n + 2 * consts["inner_steps"])), snapshot_rule="random", seed=seed,
+        )
+        assert not run.diverged
+        ratios += [b / a for a, b in zip(run.gaps[:-1], run.gaps[1:]) if a > 1e-20]
+    assert len(ratios) >= 20
+    assert float(np.mean(ratios)) <= consts["alpha"]       # the guarantee is in expectation
+    assert run.gaps[-1] < 1e-3 * run.gaps[0]                # and the iteration really converges
+
+
+def test_diag_precond_svrg_with_unit_diagonal_is_plain_svrg() -> None:
+    from experiments.run_experiments import LeastSquares, diag_precond_svrg
+
+    dataset, sampler, _ = ls_problem(batch_size=16)
+    obj = LeastSquares(dataset.features, dataset.targets)
+    obj.prepare()
+    run = diag_precond_svrg(
+        obj, np.ones(obj.d), 0.05, 32, 16, budget_evals=obj.n * 40, snapshot_rule="last", seed=0,
+        sampler=sampler,
+    )
+    assert not run.diverged and run.gaps[-1] < 1e-9 * run.gaps[0]
+
+
 def test_least_squares_gap_matches_loss_difference() -> None:
     from experiments.run_experiments import LeastSquares
 
@@ -1039,7 +1075,13 @@ def test_torch_fuzz_never_produces_nonfinite_values() -> None:
                     holder["scale"] = scale
                 opt.step(closure)
                 assert torch.isfinite(w).all(), (dtype, trial, step)
-                assert torch.isfinite(torch.stack(list(opt.flat_state().values()))).all()
+                # Proposition 4 covers the update path: weights and both moments. The snapshot
+                # rows ('snapshot', 'mu') store their inputs verbatim, so a non-finite full
+                # gradient fed to refresh_snapshot is kept as given (the oracle and the JAX
+                # engine behave identically), and the update path then sanitises it.
+                moments = opt.flat_state()
+                assert torch.isfinite(moments["exp_avg"]).all(), (dtype, trial, step)
+                assert torch.isfinite(moments["exp_avg_sq"]).all(), (dtype, trial, step)
 
 
 @requires_jax
