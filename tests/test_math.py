@@ -316,6 +316,45 @@ def test_reference_svrg_beats_its_own_noise_floor_ablation() -> None:
     assert without_vr > 10.0 * with_vr
 
 
+# Adversarial gradient values: zeros, denormals, tiny, huge, infinities and NaN.
+FUZZ_VALUES: List[float] = [
+    0.0, 1e-45, 1e-38, 1e-30, 1e-15, 1e-8, 1.0, 1e8, 1e18, 1e30, 3e38,
+    -1e-30, -1.0, -1e30, -3e38, float("inf"), float("-inf"), float("nan"),
+]
+
+
+def _fuzz_gradient(rng: np.random.Generator, size: int) -> np.ndarray:
+    picks = rng.integers(0, len(FUZZ_VALUES), size=size)
+    return np.array([FUZZ_VALUES[i] for i in picks], dtype=np.float64)
+
+
+def test_reference_fuzz_never_produces_nonfinite_values_or_oversized_steps() -> None:
+    """Proposition 4 under adversarial inputs, float32 and float64, extreme betas."""
+    rng = np.random.default_rng(2024)
+    for dtype in (np.float32, np.float64):
+        for trial in range(120):
+            cfg = ReferenceConfig(
+                lr=float(10 ** rng.uniform(-4, 0)),
+                beta1=float(rng.choice([0.0, 0.5, 0.9, 0.99, 0.9999])),
+                beta2=float(rng.choice([0.0, 0.9, 0.999, 0.9999])),
+                update_clip=float(rng.choice([1.0, 10.0, 100.0])),
+                snapshot_interval=int(rng.integers(1, 6)),
+            )
+            ref = ReferenceSVRG(cfg, dim=6, dtype=dtype)
+            w = rng.standard_normal(6).astype(dtype)
+            with np.errstate(all="ignore"):
+                ref.refresh_snapshot(w, _fuzz_gradient(rng, 6).astype(dtype))
+                for _ in range(15):
+                    g_live = _fuzz_gradient(rng, 6).astype(dtype)
+                    g_snap = _fuzz_gradient(rng, 6).astype(dtype)
+                    new_w = ref.step(w, g_live, g_snap)
+                    assert np.isfinite(new_w).all(), (dtype, trial)
+                    assert np.isfinite(ref.exp_avg).all() and np.isfinite(ref.exp_avg_sq).all()
+                    step_size = np.abs(new_w.astype(np.float64) - w.astype(np.float64))
+                    assert np.all(step_size <= cfg.lr * cfg.update_clip * 1.001 + 1e-5)
+                    w = new_w
+
+
 # --------------------------------------------------------------------------- #
 # Objectives used by the experiment suite
 # --------------------------------------------------------------------------- #
@@ -375,6 +414,48 @@ def test_paired_bootstrap_interval_covers_the_true_shift() -> None:
     assert low <= median <= high
     zero_median, zlow, zhigh = paired_bootstrap((0.1 * rng.standard_normal(30)).tolist())
     assert zlow < 0.0 < zhigh
+
+
+def test_preconditioned_svrg_is_plain_svrg_in_rescaled_coordinates() -> None:
+    """Proposition 5's change of variables u = D^{1/2} w, checked on actual iterates."""
+    dataset, sampler, _ = ls_problem()
+    d = dataset.n_features
+    diag = np.exp(np.random.default_rng(3).uniform(-1.5, 1.5, size=d))
+    root = np.sqrt(diag)
+    eta, interval, steps = 0.01, 7, 40
+
+    def grad_u(u: np.ndarray, rows: np.ndarray) -> np.ndarray:
+        return sgd_batch_gradient(dataset, rows, u / root) / root
+
+    def full_u(u: np.ndarray) -> np.ndarray:
+        return dataset.full_gradient(u / root) / root
+
+    w = np.zeros(d)
+    u = np.zeros(d)
+    w_snap, u_snap = w.copy(), u.copy()
+    mu_w, mu_u = dataset.full_gradient(w_snap), full_u(u_snap)
+    for k in range(steps):
+        if k % interval == 0:
+            w_snap, u_snap = w.copy(), u.copy()
+            mu_w, mu_u = dataset.full_gradient(w_snap), full_u(u_snap)
+        rows = sampler.batch(k)
+        g_w = sgd_batch_gradient(dataset, rows, w) - sgd_batch_gradient(dataset, rows, w_snap) + mu_w
+        g_u = grad_u(u, rows) - grad_u(u_snap, rows) + mu_u
+        w = w - eta * g_w / diag            # preconditioned step in w
+        u = u - eta * g_u                   # plain step in u
+        assert np.allclose(root * w, u, atol=1e-10), f"coordinates diverged at step {k}"
+
+
+def test_jacobi_conditioning_is_invariant_to_column_scaling() -> None:
+    from experiments.run_experiments import preconditioned_constants
+
+    dataset, _, _ = ls_problem()
+    base = preconditioned_constants(dataset.features)
+    scales = 10.0 ** np.linspace(-2.0, 2.0, dataset.n_features)
+    scaled = preconditioned_constants(dataset.features * scales)
+    assert abs(scaled["kappa_jacobi"] - base["kappa_jacobi"]) / base["kappa_jacobi"] < 1e-6
+    assert scaled["kappa"] > 1e3 * base["kappa"]            # raw conditioning explodes
+    assert scaled["kappa_ratio"] > 1e3
 
 
 def test_least_squares_gap_matches_loss_difference() -> None:
@@ -928,3 +1009,56 @@ def test_jax_matches_numpy_reference_trajectory() -> None:
             sgd_batch_gradient(dataset, rows, ref.snapshot),
         )
         assert np.allclose(np.asarray(params), w_ref, atol=1e-4), f"diverged from oracle at step {k}"
+
+
+# --------------------------------------------------------------------------- #
+# Fuzz tests for the engines (same adversarial inputs as the oracle)
+# --------------------------------------------------------------------------- #
+@requires_torch
+def test_torch_fuzz_never_produces_nonfinite_values() -> None:
+    rng = np.random.default_rng(7)
+    for dtype in (torch.float32, torch.float64):
+        for trial in range(40):
+            w = torch.nn.Parameter(torch.randn(6, dtype=dtype))
+            opt = CoordinateSVRG(
+                [w], lr=float(10 ** rng.uniform(-4, 0)),
+                betas=(float(rng.choice([0.0, 0.9, 0.9999])), float(rng.choice([0.0, 0.999, 0.9999]))),
+                snapshot_interval=3,
+            )
+            for step in range(10):
+                scale = torch.as_tensor(_fuzz_gradient(rng, 6), dtype=dtype)
+                snap_scale = torch.as_tensor(_fuzz_gradient(rng, 6), dtype=dtype)
+                holder = {"scale": scale}
+
+                def closure(batch_id: int) -> "torch.Tensor":
+                    return (w * holder["scale"]).sum()
+
+                if opt.needs_snapshot:
+                    holder["scale"] = snap_scale
+                    opt.refresh_snapshot(closure)
+                    holder["scale"] = scale
+                opt.step(closure)
+                assert torch.isfinite(w).all(), (dtype, trial, step)
+                assert torch.isfinite(torch.stack(list(opt.flat_state().values()))).all()
+
+
+@requires_jax
+def test_jax_fuzz_never_produces_nonfinite_values() -> None:
+    rng = np.random.default_rng(11)
+    for trial in range(30):
+        config = SVRGConfig(
+            lr=float(10 ** rng.uniform(-4, 0)),
+            beta1=float(rng.choice([0.0, 0.9, 0.9999])), beta2=float(rng.choice([0.0, 0.999, 0.9999])),
+        )
+        params = jnp.asarray(rng.standard_normal(6), dtype=jnp.float32)
+        state = init_state(params)
+        for step in range(10):
+            scale = jnp.asarray(_fuzz_gradient(rng, 6), dtype=jnp.float32)
+            snap_scale = jnp.asarray(_fuzz_gradient(rng, 6), dtype=jnp.float32)
+            step_fn = make_svrg_step(lambda p, b, s=scale: jnp.sum(p * s), config)
+            if step % 3 == 0:
+                state = refresh_snapshot(params, state, snap_scale)
+            params, state, _ = step_fn(params, state, None)
+            assert bool(jnp.all(jnp.isfinite(params))), (trial, step)
+            assert bool(jnp.all(jnp.isfinite(state.exp_avg)))
+            assert bool(jnp.all(jnp.isfinite(state.exp_avg_sq)))
