@@ -594,6 +594,140 @@ def experiment_nonconvex(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[
     return out
 
 
+def experiment_snapshot_interval(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    """Experiment 9: sensitivity to the snapshot interval K, and Proposition 3 across K."""
+    base: RegimeConfig = RegimeConfig.from_dict(cfg)
+    sigma: float = float(cfg["environment"]["noise_sigma_levels"]["volatile"])
+    opt_cfg: Dict[str, Any] = dict(cfg["optimizer"])
+    batch_size: int = int(cfg["training"]["batch_size"])
+    seed0: int = int(cfg["seed"]) + 9500
+    lr_grid: FloatArray = 10.0 ** np.linspace(-4.0, -1.0, args.si_lr_points)
+    tune_sets = [ls_factory(base)(seed0 + 1000 + i, sigma) for i in range(args.si_tune_seeds)]
+    eval_sets = [ls_factory(base)(seed0 + 2000 + i, sigma) for i in range(args.si_eval_seeds)]
+    for obj in tune_sets + eval_sets:
+        obj.prepare()
+    n: int = tune_sets[0].n
+    budget: int = int(args.epochs * n)
+    checkpoints: FloatArray = np.geomspace(4 * n, budget, 60)
+    rows: List[Dict[str, Any]] = []
+    for interval in args.si_intervals:
+        cfg_k: Dict[str, Any] = {**opt_cfg, "snapshot_interval": interval}
+        scores: List[float] = []
+        for lr in lr_grid:
+            gaps = [
+                optimize(o, DeterministicBatchSampler(n, batch_size, seed0 + 1000 + j),
+                         reference_config(cfg_k, "svrg_adam", float(lr)), budget).final_gap
+                for j, o in enumerate(tune_sets)
+            ]
+            scores.append(float(np.median(gaps)))
+        best_lr: float = float(lr_grid[int(np.argmin(np.where(np.isfinite(scores), scores, np.inf)))])
+        finals: List[float] = []
+        to_target: List[float] = []
+        ratios: List[float] = []
+        for i, o in enumerate(eval_sets):
+            sampler = DeterministicBatchSampler(n, batch_size, seed0 + 2000 + i)
+            run = optimize(o, sampler, reference_config(cfg_k, "svrg_adam", best_lr), budget,
+                           checkpoints=checkpoints)
+            finals.append(run.final_gap)
+            target: float = args.target_ratio * o.gap(np.zeros(o.d))
+            hit = [e for e, g in zip(run.curve_evals, run.curve_gaps) if g <= target]
+            to_target.append(hit[0] if hit else float("inf"))
+            probe = probe_variance_rows(
+                o, DeterministicBatchSampler(n, batch_size, seed0 + 2000 + i),
+                reference_config(cfg_k, "svrg_adam", best_lr),
+                steps=max(4 * interval, 256), probe_batches=args.si_probe_batches,
+                batch_size=batch_size, probe_seed=seed0 + 3000 + i,
+            )
+            ratios += [r["var_vr"] / r["prop3_bound"] for r in probe if r["prop3_bound"] > 0]
+        row = {
+            "interval": interval, "best_lr": best_lr,
+            "final_gap_median": float(np.median(finals)),
+            "evals_to_target_median": float(np.median(to_target)),
+            "reached_fraction": float(np.mean([math.isfinite(t) for t in to_target])),
+            "prop3_ratio_max": float(np.max(ratios)) if ratios else float("nan"),
+            "prop3_ratio_median": float(np.median(ratios)) if ratios else float("nan"),
+        }
+        rows.append(row)
+        print(f"  [exp9] K={interval:<5} lr={best_lr:.2e} final gap {fmt(row['final_gap_median'])}  "
+              f"evals to target {row['evals_to_target_median']:.0f}  max var/Prop3 bound {row['prop3_ratio_max']:.2e}")
+    return {"rows": rows, "target_ratio": args.target_ratio, "epochs": args.epochs,
+            "description": f"Coordinate SVRG on least squares (n={n}, d={tune_sets[0].d}, batch {batch_size}), "
+                           f"lr re-tuned for every interval K"}
+
+
+def _test_metrics_logistic(w: FloatArray, features: FloatArray, labels: FloatArray) -> Tuple[float, float]:
+    margin: FloatArray = labels * (features @ w)
+    return float(np.mean(np.logaddexp(0.0, -margin))), float(np.mean(margin > 0.0))
+
+
+def experiment_heldout(cfg: Dict[str, Any], args: argparse.Namespace, prior: Dict[str, Any]) -> Dict[str, Any]:
+    """Experiment 8: does optimisation precision survive to held-out data? (random split)
+
+    Uses each method's learning rate tuned on TRAIN loss in Experiments 4 and 7, and fresh datasets.
+    The split is random (interleaved), so this tests over-optimisation / generalisation, not
+    temporal drift (Experiment 3 covers that).
+    """
+    for key in ("logistic", "nonconvex"):
+        if key not in prior:
+            raise SystemExit(f"Experiment 8 needs the results of Experiment {4 if key == 'logistic' else 7}; run those first")
+    sigma: float = float(cfg["environment"]["noise_sigma_levels"]["volatile"])
+    opt_cfg: Dict[str, Any] = dict(cfg["optimizer"])
+    batch_size: int = int(cfg["training"]["batch_size"])
+    seed0: int = int(cfg["seed"]) + 9000
+    out: Dict[str, Any] = {"logistic": {}, "nonconvex": {}}
+
+    # ---- logistic ----
+    lg_base = dataclasses.replace(
+        RegimeConfig.from_dict(cfg), n_samples=args.lg_samples + args.ho_test, n_features=args.lg_features,
+    )
+    lg_lrs = {v: prior["logistic"]["regimes"]["volatile"]["variants"][v]["best_lr"] for v in VARIANTS}
+    results_lg: Dict[str, Dict[str, List[float]]] = {v: {"test_logloss": [], "test_acc": [], "train_loss": []} for v in VARIANTS}
+    for i in range(args.ho_seeds):
+        ds = make_dataset(lg_base, seed0 + i, sigma)
+        labels = np.where(ds.targets >= 0.0, 1.0, -1.0)
+        perm = np.random.default_rng(seed0 + 500 + i).permutation(ds.n_samples)
+        tr, te = perm[: args.lg_samples], perm[args.lg_samples:]
+        train_obj = LogisticRegression(ds.features[tr], labels[tr], args.lg_l2)
+        train_obj.prepare()
+        for v in VARIANTS:
+            run = optimize(train_obj, DeterministicBatchSampler(train_obj.n, args.lg_batch, seed0 + i),
+                           reference_config({**opt_cfg}, v, lg_lrs[v]), int(args.lg_epochs * train_obj.n),
+                           lr_schedule=VARIANTS[v][2])
+            ll, acc = _test_metrics_logistic(run.weights, ds.features[te], labels[te])
+            results_lg[v]["test_logloss"].append(ll)
+            results_lg[v]["test_acc"].append(acc)
+            results_lg[v]["train_loss"].append(train_obj.loss(run.weights))
+    out["logistic"] = results_lg
+    print("  [exp8] logistic done:", {v: round(float(np.median(r['test_logloss'])), 5) for v, r in results_lg.items()})
+
+    # ---- non-convex network ----
+    nc_base = dataclasses.replace(
+        RegimeConfig.from_dict(cfg), n_features=args.nc_inputs, alpha_drift_sigma=0.0, regime_switch_prob=0.0,
+        n_samples=RegimeConfig.from_dict(cfg).n_samples + args.ho_test,
+    )
+    nc_lrs = {v: prior["nonconvex"]["regimes"]["volatile"]["variants"][v]["best_lr"] for v in VARIANTS}
+    results_nc: Dict[str, Dict[str, List[float]]] = {v: {"test_loss": [], "train_loss": []} for v in VARIANTS}
+    n_train: int = RegimeConfig.from_dict(cfg).n_samples
+    for i in range(args.ho_seeds):
+        ds = make_dataset(nc_base, seed0 + 100 + i, sigma)
+        clean = np.einsum("td,td->t", ds.features, ds.alpha_path)
+        y = np.tanh(2.0 * clean) + 0.5 * ds.gaussian_noise
+        perm = np.random.default_rng(seed0 + 700 + i).permutation(ds.n_samples)
+        tr, te = perm[:n_train], perm[n_train:]
+        train_obj = MLPRegression(ds.features[tr], y[tr], args.nc_hidden, init_seed=seed0 + 31 + i)
+        test_obj = MLPRegression(ds.features[te], y[te], args.nc_hidden, init_seed=seed0 + 31 + i)
+        for v in VARIANTS:
+            run = optimize(train_obj, DeterministicBatchSampler(train_obj.n, batch_size, seed0 + 100 + i),
+                           reference_config({**opt_cfg}, v, nc_lrs[v]), int(args.nc_epochs * train_obj.n),
+                           w0=train_obj.init_weights, lr_schedule=VARIANTS[v][2])
+            results_nc[v]["test_loss"].append(test_obj.loss(run.weights))
+            results_nc[v]["train_loss"].append(train_obj.loss(run.weights))
+    out["nonconvex"] = results_nc
+    print("  [exp8] non-convex done:", {v: round(float(np.median(r['test_loss'])), 5) for v, r in results_nc.items()})
+    out["settings"] = {"seeds": args.ho_seeds, "test_rows": args.ho_test}
+    return out
+
+
 def experiment_logistic(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
     """Experiment 4: L2-regularised logistic regression on the sign of the return."""
     base: RegimeConfig = dataclasses.replace(
@@ -634,6 +768,50 @@ def experiment_highdim(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[st
 # --------------------------------------------------------------------------- #
 # Experiment 2: variance decay along the trajectory
 # --------------------------------------------------------------------------- #
+def probe_variance_rows(
+    obj: LeastSquares,
+    sampler: DeterministicBatchSampler,
+    ref_cfg: ReferenceConfig,
+    steps: int,
+    probe_batches: int,
+    batch_size: int,
+    probe_seed: int,
+) -> List[Dict[str, float]]:
+    """Run reference SVRG and probe Var(g_hat), Var(g_sgd) at maximum snapshot staleness."""
+    opt: ReferenceSVRG = ReferenceSVRG(ref_cfg, obj.d)
+    probe_rng = np.random.default_rng(probe_seed)
+    lbar2: float = obj.smoothness_second_moment()
+    interval: int = ref_cfg.snapshot_interval
+    w: FloatArray = np.zeros(obj.d)
+    rows_out: List[Dict[str, float]] = []
+    for step in range(steps):
+        if opt.needs_snapshot:
+            opt.refresh_snapshot(w, obj.full_grad(w))
+        if opt.steps_since_snapshot == interval - 1:
+            true_grad: FloatArray = obj.full_grad(w)
+            delta_sq: float = float(np.sum((w - opt.snapshot) ** 2))  # type: ignore[operator]
+            vr_sum = sgd_sum = 0.0
+            for _ in range(probe_batches):
+                rows = np.sort(probe_rng.choice(obj.n, size=batch_size, replace=False))
+                g_live = obj.grad(w, rows)
+                g_snap = obj.grad(opt.snapshot, rows)  # type: ignore[arg-type]
+                g_hat = opt.variance_reduced_gradient(w, g_live, g_snap)
+                vr_sum += float(np.sum((g_hat - true_grad) ** 2))
+                sgd_sum += float(np.sum((g_live - true_grad) ** 2))
+            rows_out.append({
+                "step": float(step),
+                "var_vr": vr_sum / probe_batches,
+                "var_sgd": sgd_sum / probe_batches,
+                "lemma2_bound": lbar2 * delta_sq / batch_size,
+                "prop3_bound": lbar2 * obj.d * (ref_cfg.lr * ref_cfg.update_clip * interval) ** 2 / batch_size,
+                "snapshot_distance": math.sqrt(delta_sq),
+                "gap": obj.gap(w),
+            })
+        rows = sampler.batch(step)
+        w = opt.step(w, obj.grad(w, rows), obj.grad(opt.snapshot, rows))  # type: ignore[arg-type]
+    return rows_out
+
+
 def experiment_variance(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
     base: RegimeConfig = RegimeConfig.from_dict(cfg)
     opt_cfg: Dict[str, Any] = dict(cfg["optimizer"])
@@ -644,40 +822,8 @@ def experiment_variance(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[s
     sampler = DeterministicBatchSampler(obj.n, batch_size, seed0 + 3000)
     lr: float = float(opt_cfg["lr"])
     ref_cfg: ReferenceConfig = reference_config(opt_cfg, "svrg_adam", lr)
-    opt: ReferenceSVRG = ReferenceSVRG(ref_cfg, obj.d)
-    probe_rng = np.random.default_rng(seed0 + 3001)
-    lbar2: float = obj.smoothness_second_moment()
-    interval: int = ref_cfg.snapshot_interval
-
-    w: FloatArray = np.zeros(obj.d)
-    rows_out: List[Dict[str, float]] = []
-    for step in range(args.variance_steps):
-        if opt.needs_snapshot:
-            opt.refresh_snapshot(w, obj.full_grad(w))
-        # probe at the moment of maximum staleness inside each snapshot cycle
-        if opt.steps_since_snapshot == interval - 1:
-            true_grad: FloatArray = obj.full_grad(w)
-            delta_sq: float = float(np.sum((w - opt.snapshot) ** 2))  # type: ignore[operator]
-            vr_sum = sgd_sum = 0.0
-            for _ in range(args.probe_batches):
-                rows = np.sort(probe_rng.choice(obj.n, size=batch_size, replace=False))
-                g_live = obj.grad(w, rows)
-                g_snap = obj.grad(opt.snapshot, rows)  # type: ignore[arg-type]
-                g_hat = opt.variance_reduced_gradient(w, g_live, g_snap)
-                vr_sum += float(np.sum((g_hat - true_grad) ** 2))
-                sgd_sum += float(np.sum((g_live - true_grad) ** 2))
-            rows_out.append({
-                "step": float(step),
-                "var_vr": vr_sum / args.probe_batches,
-                "var_sgd": sgd_sum / args.probe_batches,
-                "lemma2_bound": lbar2 * delta_sq / batch_size,
-                "prop3_bound": lbar2 * obj.d * (lr * ref_cfg.update_clip * interval) ** 2 / batch_size,
-                "snapshot_distance": math.sqrt(delta_sq),
-                "gap": obj.gap(w),
-            })
-        rows = sampler.batch(step)
-        w = opt.step(w, obj.grad(w, rows), obj.grad(opt.snapshot, rows))  # type: ignore[arg-type]
-
+    rows_out = probe_variance_rows(obj, sampler, ref_cfg, args.variance_steps, args.probe_batches,
+                                   batch_size, seed0 + 3001)
     within_lemma: float = float(np.mean([r["var_vr"] <= r["lemma2_bound"] for r in rows_out]))
     within_prop: float = float(np.mean([r["var_vr"] <= r["prop3_bound"] for r in rows_out]))
     print(f"  [exp2] probes={len(rows_out)}  within Lemma 2: {within_lemma:.0%}  within Prop 3: {within_prop:.0%}")
@@ -686,7 +832,7 @@ def experiment_variance(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[s
         "fraction_within_lemma2": within_lemma,
         "fraction_within_prop3": within_prop,
         "lr": lr,
-        "snapshot_interval": interval,
+        "snapshot_interval": ref_cfg.snapshot_interval,
     }
 
 
@@ -979,6 +1125,72 @@ def write_tables(results: Dict[str, Any], path: Path) -> None:
                 return f"{m[k]['median']:.3f} [{m[k]['q25']:.3f}, {m[k]['q75']:.3f}]"
             lines.append(f"| {label} | {c2('ic_target')} | {c2('hit_rate')} | {c2('sharpe_per_tick')} |")
         lines.append("")
+    if "heldout" in results:
+        h = results["heldout"]
+        lines += [
+            "### Experiment 8: held-out evaluation (random split)",
+            "",
+            f"{h['settings']['seeds']} fresh datasets per task, {h['settings']['test_rows']} held-out rows each, "
+            "learning rates tuned on training loss in Experiments 4 and 7. Median [IQR] over seeds. The split is random, "
+            "so this measures over-optimisation, not temporal drift.",
+            "",
+            "**Logistic regression (volatile)**: test log-loss (lower is better), test accuracy.",
+            "",
+            "| Method | test log-loss | test accuracy | train loss |",
+            "|---|---|---|---|",
+        ]
+        for v, r in h["logistic"].items():
+            def c(k: str, prec: int = 5) -> str:
+                q25, q50, q75 = quartiles(r[k])
+                return f"{q50:.{prec}f} [{q25:.{prec}f}, {q75:.{prec}f}]"
+            lines.append(f"| {VARIANT_LABELS[v]} | {c('test_logloss')} | {c('test_acc', 4)} | {c('train_loss')} |")
+        base_name = min(["sgd_momentum", "sgd_momentum_cosine", "adam", "adam_cosine"],
+                        key=lambda b: float(np.median(h["logistic"][b]["test_logloss"])))
+        lines += ["", "Paired test-log-loss difference versus the best baseline by median "
+                  f"({VARIANT_LABELS[base_name]}; chosen on these same seeds, which is conservative for SVRG). "
+                  "Negative favours the first method.", "",
+                  "| Method | median diff | 95% CI |", "|---|---|---|"]
+        for name in ("svrg_momentum", "svrg_adam", "svrg_adam_cosine"):
+            d = np.asarray(h["logistic"][name]["test_logloss"]) - np.asarray(h["logistic"][base_name]["test_logloss"])
+            med, lo, hi = paired_bootstrap(d)
+            lines.append(f"| {VARIANT_LABELS[name]} | {med:+.2e} | [{lo:+.2e}, {hi:+.2e}] |")
+        lines += ["", "**Non-convex network (volatile)**: test loss (0.5 x MSE, lower is better; the irreducible "
+                  "noise floor is 0.125), train loss.", "",
+                  "| Method | test loss | train loss |", "|---|---|---|"]
+        for v, r in h["nonconvex"].items():
+            def c2(k: str) -> str:
+                q25, q50, q75 = quartiles(r[k])
+                return f"{q50:.4f} [{q25:.4f}, {q75:.4f}]"
+            lines.append(f"| {VARIANT_LABELS[v]} | {c2('test_loss')} | {c2('train_loss')} |")
+        base_name = min(["sgd_momentum", "sgd_momentum_cosine", "adam", "adam_cosine"],
+                        key=lambda b: float(np.median(h["nonconvex"][b]["test_loss"])))
+        lines += ["", "Paired test-loss difference versus the best baseline by median "
+                  f"({VARIANT_LABELS[base_name]}). Negative favours the first method.", "",
+                  "| Method | median diff | 95% CI |", "|---|---|---|"]
+        for name in ("svrg_momentum", "svrg_adam", "svrg_adam_cosine"):
+            d = np.asarray(h["nonconvex"][name]["test_loss"]) - np.asarray(h["nonconvex"][base_name]["test_loss"])
+            med, lo, hi = paired_bootstrap(d)
+            lines.append(f"| {VARIANT_LABELS[name]} | {med:+.4f} | [{lo:+.4f}, {hi:+.4f}] |")
+        lines.append("")
+    if "snapshot_interval" in results:
+        si = results["snapshot_interval"]
+        lines += [
+            "### Experiment 9: snapshot interval K",
+            "",
+            f"{si['description']}. 'Prop 3 ratio' = measured gradient variance at worst-case staleness divided by the "
+            "Proposition 3 bound; the bound holds when it is at most 1.",
+            "",
+            "| K | tuned lr | lr x K | final gap, median | evals to target | seeds reaching target | max Prop 3 ratio | median Prop 3 ratio |",
+            "|---|---|---|---|---|---|---|---|",
+        ]
+        for r in si["rows"]:
+            e = r["evals_to_target_median"]
+            lines.append(
+                f"| {r['interval']} | {r['best_lr']:.2e} | {r['best_lr'] * r['interval']:.2f} | {fmt(r['final_gap_median'])} | "
+                f"{'not reached' if math.isinf(e) else f'{e:,.0f}'} | {r['reached_fraction']:.0%} | "
+                f"{r['prop3_ratio_max']:.2e} | {r['prop3_ratio_median']:.2e} |"
+            )
+        lines.append("")
     lines += significance_lines(results)
     path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -1065,6 +1277,26 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
         fig.tight_layout()
         p = out_dir / "walk_forward_ic.png"
         fig.savefig(p, dpi=150); plt.close(fig); written.append(str(p))
+    if "snapshot_interval" in results:
+        rows = results["snapshot_interval"]["rows"]
+        ks = [r["interval"] for r in rows]
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+        ev = [r["evals_to_target_median"] if math.isfinite(r["evals_to_target_median"]) else np.nan for r in rows]
+        axes[0].plot(ks, ev, marker="o", color="#d62728", lw=2)
+        axes[0].set_xscale("log", base=2)
+        if np.any(np.isfinite(ev)):
+            axes[0].set_yscale("log")
+        axes[0].set_xlabel("snapshot interval K (steps)"); axes[0].set_ylabel("evals to 1e-8 x initial gap")
+        axes[0].set_title("Sensitivity to the snapshot interval"); axes[0].grid(alpha=0.3, which="both")
+        axes[1].plot(ks, [r["prop3_ratio_max"] for r in rows], marker="o", label="max over probes", color="#2ca02c", lw=2)
+        axes[1].plot(ks, [r["prop3_ratio_median"] for r in rows], marker="s", label="median", color="#1f77b4", lw=2)
+        axes[1].axhline(1.0, ls="--", color="black", label="bound = 1")
+        axes[1].set_xscale("log", base=2); axes[1].set_yscale("log")
+        axes[1].set_xlabel("snapshot interval K (steps)"); axes[1].set_ylabel("measured variance / Proposition 3 bound")
+        axes[1].set_title("Proposition 3 holds across K"); axes[1].grid(alpha=0.3, which="both"); axes[1].legend(fontsize=8)
+        fig.tight_layout()
+        p = out_dir / "snapshot_interval.png"
+        fig.savefig(p, dpi=150); plt.close(fig); written.append(str(p))
     return written
 
 
@@ -1074,8 +1306,10 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default=str(REPO_ROOT / "configs" / "stochastic_regime.yaml"))
-    parser.add_argument("--only", nargs="+", type=int, choices=[1, 2, 3, 4, 5, 6, 7], default=[1, 2, 3, 4, 5, 6, 7])
+    parser.add_argument("--only", nargs="+", type=int, choices=[1, 2, 3, 4, 5, 6, 7, 8, 9], default=[1, 2, 3, 4, 5, 6, 7, 8, 9])
     parser.add_argument("--quick", action="store_true", help="tiny settings for a smoke test")
+    parser.add_argument("--tables-only", action="store_true",
+                        help="regenerate tables.md and figures from the stored results.json, run nothing")
     parser.add_argument("--merge", action="store_true",
                         help="update results/experiments.json in place instead of overwriting it")
     parser.add_argument("--out", default=str(REPO_ROOT / "results"))
@@ -1098,6 +1332,15 @@ def main() -> None:
     parser.add_argument("--lg-lr-points", type=int, default=9)
     parser.add_argument("--lg-tune-seeds", type=int, default=1)
     parser.add_argument("--lg-eval-seeds", type=int, default=12)
+    # experiment 8 (held-out)
+    parser.add_argument("--ho-seeds", type=int, default=8)
+    parser.add_argument("--ho-test", type=int, default=5000)
+    # experiment 9 (snapshot interval)
+    parser.add_argument("--si-intervals", nargs="+", type=int, default=[8, 16, 32, 64, 128, 256, 512, 1024])
+    parser.add_argument("--si-lr-points", type=int, default=7)
+    parser.add_argument("--si-tune-seeds", type=int, default=2)
+    parser.add_argument("--si-eval-seeds", type=int, default=6)
+    parser.add_argument("--si-probe-batches", type=int, default=32)
     # experiment 7 (non-convex)
     parser.add_argument("--nc-inputs", type=int, default=16)
     parser.add_argument("--nc-hidden", type=int, default=16)
@@ -1135,8 +1378,16 @@ def main() -> None:
         args.hd_samples, args.hd_features, args.hd_epochs, args.hd_lr_points = 4000, 20, 8, 4
         args.hd_eval_seeds = 2
         args.nc_epochs, args.nc_lr_points, args.nc_tune_seeds, args.nc_eval_seeds = 8, 4, 1, 2
+        args.ho_seeds, args.ho_test = 2, 1000
+        args.si_intervals, args.si_lr_points, args.si_tune_seeds, args.si_eval_seeds = [8, 32, 128], 3, 1, 2
+        args.si_probe_batches = 8
 
     cfg: Dict[str, Any] = load_config(args.config)
+    if args.tables_only:
+        stored: Dict[str, Any] = json.loads((Path(args.out) / "experiments.json").read_text(encoding="utf-8"))
+        write_tables(stored, Path(args.out) / "tables.md")
+        print(f"regenerated tables and {len(make_figures(stored, Path(args.figures)))} figure(s) from stored results")
+        return
     results: Dict[str, Any] = {}
     started: float = time.time()
     if 1 in args.only:
@@ -1160,6 +1411,17 @@ def main() -> None:
     if 7 in args.only:
         print("Experiment 7: non-convex network")
         results["nonconvex"] = experiment_nonconvex(cfg, args)
+    prior: Dict[str, Any] = dict(results)
+    existing: Path = Path(args.out) / "experiments.json"
+    if existing.exists():
+        for key, value in json.loads(existing.read_text(encoding="utf-8")).items():
+            prior.setdefault(key, value)
+    if 8 in args.only:
+        print("Experiment 8: held-out evaluation")
+        results["heldout"] = experiment_heldout(cfg, args, prior)
+    if 9 in args.only:
+        print("Experiment 9: snapshot interval")
+        results["snapshot_interval"] = experiment_snapshot_interval(cfg, args)
 
     out_dir: Path = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
