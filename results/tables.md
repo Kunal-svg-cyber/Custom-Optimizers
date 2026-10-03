@@ -214,6 +214,17 @@ Paired test-loss difference versus the best baseline by median (SGD + momentum, 
 | Coordinate SVRG (ours) | +0.0116 | [+0.0095, +0.0140] |
 | Coordinate SVRG, cosine lr (ours) | +0.0135 | [+0.0106, +0.0150] |
 
+### Experiment 11: Jacobi-preconditioned SVRG with theory-prescribed hyper-parameters
+
+Jacobi-preconditioned SVRG on least squares, volatile regime; datasets and seeds identical to Experiments 1 and 6. **Theory** = every hyper-parameter from the Johnson-Zhang recipe (`eta = 0.1 / L_D`, `m = 50 L_D / gamma_D` single-sample steps, random-iterate snapshots): zero tuning. **Tuned** = mini-batches, last-iterate snapshots, learning rate swept like every other method. The theorem guarantees `E[gap_s] <= alpha * gap_{s-1}` per epoch; 'observed' is the measured mean epoch-to-epoch ratio (epochs with gap above 1e-20 only).
+
+| Problem | Method | median final gap | evals to target | kappa_D | predicted alpha | observed mean ratio (max) |
+|---|---|---|---|---|---|---|
+| well-scaled features | Jacobi SVRG, theory-prescribed (no tuning) | 6.24e-30 | 75,192 | 82 | 0.50 | 0.103 (0.929) |
+| well-scaled features | Jacobi SVRG, tuned lr 5.62e-02 | 4.01e-31 | 49,152 | | | |
+| badly scaled features (3 decades) | Jacobi SVRG, theory-prescribed (no tuning) | 2.62e-29 | 73,848 | 83 | 0.50 | 0.077 (0.863) |
+| badly scaled features (3 decades) | Jacobi SVRG, tuned lr 5.62e-02 | 1.78e-29 | 49,152 | | | |
+
 ### Experiment 10: predicted benefit of diagonal preconditioning (Proposition 5)
 
 Median over 5 datasets. `kappa = L / gamma` with `L = max_i ||x_i||^2` and `gamma = lambda_min(X^T X / n)`; the Jacobi-preconditioned constants use `D = diag(X^T X / n)`. Proposition 5 gives SVRG's linear rate in terms of this `kappa`.
@@ -280,6 +291,18 @@ Difference in `log10(final gap)`: **negative means the first method is better**.
 | Exp 7 non-convex / volatile | Coordinate SVRG (ours) vs Adam (clamped), cosine lr | +1.55 | [+0.90, +1.88] | 0/8 |
 | Exp 7 non-convex / volatile | SVRG + momentum vs Adam (clamped), cosine lr | +0.36 | [-0.03, +0.62] | 2/8 |
 | Exp 7 non-convex / volatile | Coordinate SVRG (ours) vs SVRG + momentum | +1.19 | [+0.87, +1.36] | 0/8 |
+| Exp 11 well-scaled features | Jacobi SVRG (theory) vs SGD + momentum, cosine lr | -22.22 | [-22.35, -22.09] | 20/20 |
+| Exp 11 well-scaled features | Jacobi SVRG (theory) vs Coordinate SVRG, cosine lr (ours) | +1.16 | [+1.04, +1.32] | 0/20 |
+| Exp 11 well-scaled features | Jacobi SVRG (theory) vs Coordinate SVRG (ours) | +1.15 | [+1.03, +1.31] | 0/20 |
+| Exp 11 well-scaled features | Jacobi SVRG (tuned) vs SGD + momentum, cosine lr | -23.44 | [-23.53, -23.32] | 20/20 |
+| Exp 11 well-scaled features | Jacobi SVRG (tuned) vs Coordinate SVRG, cosine lr (ours) | -0.01 | [-0.03, -0.00] | 14/20 |
+| Exp 11 well-scaled features | Jacobi SVRG (tuned) vs Coordinate SVRG (ours) | -0.03 | [-0.06, +0.00] | 14/20 |
+| Exp 11 badly scaled features (3 decades) | Jacobi SVRG (theory) vs Adam (clamped), cosine lr | -23.44 | [-23.71, -23.23] | 20/20 |
+| Exp 11 badly scaled features (3 decades) | Jacobi SVRG (theory) vs Coordinate SVRG, cosine lr (ours) | -17.60 | [-18.15, -16.88] | 20/20 |
+| Exp 11 badly scaled features (3 decades) | Jacobi SVRG (theory) vs Coordinate SVRG (ours) | -25.20 | [-25.77, -24.76] | 20/20 |
+| Exp 11 badly scaled features (3 decades) | Jacobi SVRG (tuned) vs Adam (clamped), cosine lr | -23.62 | [-23.79, -23.35] | 20/20 |
+| Exp 11 badly scaled features (3 decades) | Jacobi SVRG (tuned) vs Coordinate SVRG, cosine lr (ours) | -17.63 | [-18.45, -16.92] | 20/20 |
+| Exp 11 badly scaled features (3 decades) | Jacobi SVRG (tuned) vs Coordinate SVRG (ours) | -25.54 | [-25.94, -25.00] | 20/20 |
 
 Walk-forward (Experiment 3): paired difference in out-of-sample IC versus OLS, median with 95% bootstrap interval over seeds. An interval containing 0 means no detectable difference.
 
