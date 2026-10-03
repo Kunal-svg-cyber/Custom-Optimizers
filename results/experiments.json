@@ -18231,5 +18231,28 @@
   "target_ratio": 1e-08,
   "epochs": 100,
   "description": "Coordinate SVRG on least squares (n=4096, d=32, batch 64), lr re-tuned for every interval K"
+ },
+ "conditioning": {
+  "problems": {
+   "well-scaled features": {
+    "L": 67.01430121352365,
+    "gamma": 0.8239923373638913,
+    "kappa": 81.28482839434626,
+    "L_jacobi": 67.20982977163115,
+    "gamma_jacobi": 0.8283668129007001,
+    "kappa_jacobi": 82.18177661944874,
+    "kappa_ratio": 1.0054796200825766
+   },
+   "badly scaled features (3 decades)": {
+    "L": 11410.057215373152,
+    "gamma": 0.0010520438219063105,
+    "kappa": 10845610.20918126,
+    "L_jacobi": 67.20982977163115,
+    "gamma_jacobi": 0.828366812900701,
+    "kappa_jacobi": 82.18177661944866,
+    "kappa_ratio": 132931.74136018349
+   }
+  },
+  "seeds": 5
  }
 }

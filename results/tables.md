@@ -214,6 +214,15 @@ Paired test-loss difference versus the best baseline by median (SGD + momentum, 
 | Coordinate SVRG (ours) | +0.0116 | [+0.0095, +0.0140] |
 | Coordinate SVRG, cosine lr (ours) | +0.0135 | [+0.0106, +0.0150] |
 
+### Experiment 10: predicted benefit of diagonal preconditioning (Proposition 5)
+
+Median over 5 datasets. `kappa = L / gamma` with `L = max_i ||x_i||^2` and `gamma = lambda_min(X^T X / n)`; the Jacobi-preconditioned constants use `D = diag(X^T X / n)`. Proposition 5 gives SVRG's linear rate in terms of this `kappa`.
+
+| Problem | kappa (raw) | kappa (Jacobi) | predicted reduction |
+|---|---|---|---|
+| well-scaled features | 8.128e+01 | 8.218e+01 | 1.0x |
+| badly scaled features (3 decades) | 1.085e+07 | 8.218e+01 | 132931.7x |
+
 ### Experiment 9: snapshot interval K
 
 Coordinate SVRG on least squares (n=4096, d=32, batch 64), lr re-tuned for every interval K. 'Prop 3 ratio' = measured gradient variance at worst-case staleness divided by the Proposition 3 bound; the bound holds when it is at most 1.
