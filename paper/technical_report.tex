@@ -28,6 +28,7 @@
 I implement a variance-reduced optimizer with adaptive coordinate scaling (``Coordinate SVRG'') in PyTorch and JAX, validate both against an independent NumPy oracle, and evaluate it on synthetic low signal-to-noise finite-sum problems built to resemble noisy tick data.
 I prove a variance bound that explains the method's behaviour, a staleness-controlled variant of it for the adaptive engine, a numerical-safety property, and a short corollary explaining when diagonal scaling helps.
 Against learning-rate-tuned Adam and SGD with momentum (constant and cosine-decay), variance reduction reaches float64 round-off on well-scaled convex problems; adaptive scaling helps only when features are badly scaled; and on a noisy non-convex fit the more precisely optimised model generalises \emph{worse}.
+The preconditioning corollary also yields a simpler method, Jacobi-preconditioned SVRG, whose hyper-parameters can be read off the theory with no tuning; on badly scaled least squares it reaches round-off on every seed, where the best tuned adaptive variant reaches $\ExpSixCosineGap$.
 There is no wall-clock win over a direct solve at the sizes tested, and no benefit for walk-forward signal tracking.
 All data are synthetic, all models small, and the PyTorch and JAX engines did not produce the reported numbers; the report states these limits explicitly.
 \end{abstract}
@@ -39,7 +40,8 @@ Stochastic gradient methods stall on noisy finite-sum objectives because per-sam
 \begin{enumerate}[leftmargin=*,itemsep=2pt]
 \item A reference implementation in PyTorch and JAX with four enforced invariants (Section~\ref{sec:method}), tested step-for-step against an independent NumPy oracle, with adversarial-input fuzz tests.
 \item Four short results (Section~\ref{sec:theory}): a variance bound (Lemma~\ref{lem:var}), a staleness-controlled version valid for the adaptive engine (Proposition~\ref{prop:stale}), a numerical-safety property (Proposition~\ref{prop:safe}), and a preconditioning corollary (Proposition~\ref{prop:precond}) that predicts when adaptive scaling helps.
-\item A learning-rate-tuned ablation with held-out seeds and paired bootstrap intervals across ten experiments, including negative and null results.
+\item A learning-rate-tuned ablation with held-out seeds and paired bootstrap intervals across eleven experiments, including negative and null results.
+\item A falsifiable prediction from the theory, tested: a method with theory-prescribed hyper-parameters (Section~\ref{sec:jacobi}) that outperforms the more elaborate adaptive engine on badly scaled problems. The engine's own scaling is best read as a gradient-only proxy for it.
 \end{enumerate}
 I make no claim about real markets, deep networks, or large-scale wall-clock performance.
 
@@ -105,11 +107,11 @@ Put $u=D^{1/2}w$. Then $\nabla\tilde f_i(u)=D^{-1/2}\nabla f_i(w)$, so the SVRG 
 \end{proof}
 The rate depends on $\kappa_D=L_D/\gamma_D$. For least squares with Jacobi scaling $D=\mathrm{diag}(X^\top X/n)$, $\kappa_D$ is invariant to rescaling feature columns, and Jacobi scaling is within a factor of the dimension of the best diagonal scaling \cite{vandersluis1969}. On the badly scaled problem below, $\kappa$ falls from $\ExpTenBadRaw$ to $\ExpTenBadJacobi$; on equal-variance features it does not move ($\ExpTenGoodRaw\to\ExpTenGoodJacobi$).
 \begin{remark}
-The engine's preconditioner $\mathrm{diag}(\sqrt{\hat v_t})$ is not frozen and tracks gradient scale rather than Hessian-diagonal scale. The proposition covers the frozen idealisation; the link to the adaptive engine is empirical consistency, not a theorem. \textbf{I prove no convergence theorem for the adaptive engine itself.} Adam-type methods can fail to converge in general \cite{reddi2018}, and normalisation keeps the step near $\eta$ per coordinate even as gradients shrink, which explains the constant-rate plateau seen in Section~\ref{sec:results}.
+The theorem is for Option~II snapshots (a uniformly random inner iterate); the engine uses the last iterate. The engine's preconditioner $\mathrm{diag}(\sqrt{\hat v_t})$ is not frozen and tracks gradient scale rather than Hessian-diagonal scale. The proposition covers the frozen idealisation; the link to the adaptive engine is empirical consistency, not a theorem. \textbf{I prove no convergence theorem for the adaptive engine itself.} Adam-type methods can fail to converge in general \cite{reddi2018}, and normalisation keeps the step near $\eta$ per coordinate even as gradients shrink, which explains the constant-rate plateau seen in Section~\ref{sec:results}.
 \end{remark}
 
 \section{Experimental protocol}
-All results use a NumPy reference implementation of the update rule; the PyTorch and JAX engines are tested against it but \emph{did not produce the numbers reported here}. Data come from a simulator: AR(1) features, a hidden alpha with drift and regime switches, Gaussian noise at three levels, heavy-tailed toxic-flow shocks and arbitrage jumps (empirical SNR about $-4$\,dB in the default regime).
+All results use a NumPy reference implementation of the update rule; the PyTorch and JAX engines are tested against it (step-for-step differential tests, run in continuous integration) but \emph{did not produce the numbers reported here}. Data come from a simulator: AR(1) features, a hidden alpha with drift and regime switches, Gaussian noise at three levels, heavy-tailed toxic-flow shocks and arbitrage jumps (empirical SNR about $-4$\,dB in the default regime).
 Every method receives its own learning-rate sweep on tuning seeds and is scored on disjoint held-out seeds. Budgets count sample-gradient evaluations; SVRG is charged for double gradients and every full-gradient snapshot pass. Baselines are Adam (with the same clamped denominator) and SGD with momentum, each with constant and cosine-decay learning rates. Differences are reported in decades of $\log_{10}$(final gap) with 95\% paired bootstrap intervals over seeds and win counts; no multiple-comparison correction is applied. Where one method sits at float64 round-off ($\approx10^{-31}$), the \emph{magnitude} of a difference is not meaningful, only the win count.
 
 \section{Results}\label{sec:results}
@@ -131,7 +133,7 @@ With column scales spread over three decades (Table~\ref{tab:hetero}), Coordinat
 \begin{figure}[h]
 \centering
 \includegraphics[width=0.6\linewidth]{hetero_curves.png}
-\caption{Badly scaled features. Only variance reduction with adaptive scaling and a decaying rate reaches the target.}
+\caption{Badly scaled features. Among these methods, only variance reduction with adaptive scaling and a decaying rate reaches the target; Section~\ref{sec:jacobi} adds a simpler method that does better.}
 \end{figure}
 
 \subsection{The variance law along a real trajectory}
@@ -155,6 +157,16 @@ Evaluations to the target are U-shaped in the snapshot interval $K$: best at $K=
 \caption{Sensitivity to the snapshot interval, and the Proposition~\ref{prop:stale} ratio across intervals.}\label{fig:si}
 \end{figure}
 
+\subsection{A method read off the theory}\label{sec:jacobi}
+Proposition~\ref{prop:precond} suggests using the frozen Jacobi preconditioner $D=\mathrm{diag}(X^\top X/n)$ and taking every other hyper-parameter from the Johnson--Zhang recipe: $\eta=0.1/L_D$, $m=\lceil 50L_D/\gamma_D\rceil$ single-sample inner steps ($m=\ExpElevenInner$ here), random-iterate snapshots, for a guaranteed per-epoch contraction factor $\alpha=\ExpElevenAlpha$ and \emph{no tuning}. On the datasets and seeds of Tables~\ref{tab:ls} and~\ref{tab:hetero} (Table~\ref{tab:jacobi}), this reaches $\ExpElevenBadTheoryGap$ on the badly scaled problem, at float64 round-off, beating Coordinate SVRG with cosine decay ($\ExpSixCosineGap$) on \ExpElevenBadWins{} seeds and needing \ExpElevenEvalsTheory{} sample-gradient evaluations to reach the target against \ExpElevenEvalsCoord{} for that method (\ExpElevenSpeedup$\times$ fewer). The measured mean epoch-to-epoch contraction is \ExpElevenContractionBad{} (badly scaled) and \ExpElevenContractionGood{} (well-scaled), consistent with the guaranteed $\ExpElevenAlpha$ in expectation but loose by a factor of about five. On well-scaled data it matches the other round-off-level methods.
+The comparison favours Jacobi-SVRG in one respect that should be stated: it uses the Hessian diagonal of a linear model, one extra pass over the data not charged above, whereas Coordinate SVRG uses gradients only and applies to models where the Hessian diagonal is unavailable. The finding is that where the Hessian diagonal \emph{is} available, the simpler theory-derived method dominates the more elaborate one.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.95\linewidth]{jacobi_curves.png}
+\caption{Jacobi-preconditioned SVRG (theory-prescribed and tuned) against the best tuned baselines.}
+\end{figure}
+
 \subsection{Walk-forward signal tracking: no benefit}
 In a rolling re-estimation of a drifting alpha under a compute budget, every method's out-of-sample correlation with the clean signal differs from closed-form OLS by at most \ExpThreeMaxICDiff, against a spread across datasets of about \ExpThreeIQR; paired intervals often exclude zero but the effects are negligible, and SVRG never beats Adam. The problem is too small for the choice of optimizer to matter.
 
@@ -163,10 +175,11 @@ In a rolling re-estimation of a drifting alpha under a compute budget, every met
 \item \textbf{Synthetic data.} The simulator generates what the models assume. Nothing here is evidence of real-market performance.
 \item \textbf{Convex bias.} Most experiments are convex, the best case for SVRG; variance reduction is known to help far less in deep learning \cite{defazio2019}. One small non-convex network is not evidence about deep models.
 \item \textbf{Scale.} The largest problem has $n=\ExpFiveN$, $d=\ExpFiveD$, where a direct solve is as fast as any iterative method.
-\item \textbf{Engines not executed by the author's sandbox.} The PyTorch and JAX engines are validated by tests written against the oracle, to be run on the reader's machine; the reported numbers are from the NumPy oracle.
+\item \textbf{Engines versus experiments.} The PyTorch and JAX engines are validated by tests written against the oracle and run in continuous integration on CPU, including step-for-step agreement with it; the reported numbers, however, come from the NumPy oracle, and no GPU benchmark has been run.
 \item \textbf{No convergence proof for the adaptive engine}; the cosine-decay results are empirical.
 \item \textbf{Statistics.} Seed counts range from 3 to 20; intervals are bootstrap intervals over seeds; no multiple-comparison correction; learning rates are tuned on training loss in the non-convex and logistic held-out checks.
 \item \textbf{Tuning cost} is excluded from the iterative wall-clock times.
+\item \textbf{Jacobi-SVRG needs the Hessian diagonal} (available for linear and generalised-linear models, not in general), and its single-sample theory variant is slow per evaluation in wall-clock terms; the evaluation counts above do not charge the one extra pass that computes $D$.
 \end{itemize}
 
 \section{Reproducibility}

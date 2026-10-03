@@ -157,6 +157,26 @@ def main() -> None:
     macros["ExpTenGoodRaw"] = f"{good['kappa']:.0f}"
     macros["ExpTenGoodJacobi"] = f"{good['kappa_jacobi']:.0f}"
 
+    # ---- Experiment 11 (Jacobi SVRG, theory-prescribed) ----
+    jp = r["jacobi"]["problems"]
+    jbad = [v for k, v in jp.items() if k.startswith("badly")][0]
+    jgood = [v for k, v in jp.items() if k.startswith("well")][0]
+    macros["ExpElevenBadTheoryGap"] = sci(jbad["theory"]["final_gap_median"])
+    macros["ExpElevenBadTunedGap"] = sci(jbad["tuned"]["final_gap_median"])
+    macros["ExpElevenGoodTheoryGap"] = sci(jgood["theory"]["final_gap_median"])
+    macros["ExpElevenAlpha"] = f"{jbad['theory']['alpha_predicted']:.2f}"
+    macros["ExpElevenContractionBad"] = f"{jbad['theory']['mean_epoch_contraction']:.2f}"
+    macros["ExpElevenContractionGood"] = f"{jgood['theory']['mean_epoch_contraction']:.2f}"
+    macros["ExpElevenInner"] = f"{jbad['theory']['inner_steps']:,}".replace(",", "{,}")
+    coord = r["hetero"]["regimes"]["volatile"]["variants"]["svrg_adam_cosine"]
+    macros["ExpElevenEvalsTheory"] = f"{jbad['theory']['evals_to_target_median']:,.0f}".replace(",", "{,}")
+    macros["ExpElevenEvalsTuned"] = f"{jbad['tuned']['evals_to_target_median']:,.0f}".replace(",", "{,}")
+    macros["ExpElevenEvalsCoord"] = f"{coord['evals_to_target_median']:,.0f}".replace(",", "{,}")
+    macros["ExpElevenSpeedup"] = f"{coord['evals_to_target_median'] / jbad['theory']['evals_to_target_median']:.1f}"
+    mine = np.log10(np.maximum(np.asarray(jbad["theory"]["final_gaps"], dtype=float), 1e-40))
+    theirs = np.log10(np.maximum(np.asarray(coord["final_gaps"], dtype=float), 1e-40))
+    macros["ExpElevenBadWins"] = f"{int(np.sum(mine < theirs))}/{len(mine)}"
+
     # ---- Experiment 3 (walk-forward) ----
     wf = r["walk_forward"]["by_budget"]
     diffs: List[float] = []
@@ -187,7 +207,19 @@ def main() -> None:
                 rf"\caption{{{caption}}}", rf"\label{{{label}}}", r"\end{table}"]
         return "\n".join(out)
 
+    jt = [r"\begin{table}[h]", r"\centering", r"\small", r"\begin{tabular}{@{}llrr@{}}", r"\toprule",
+          r"Problem & Method & median final gap & evals to target \\", r"\midrule"]
+    for pname, pr in r["jacobi"]["problems"].items():
+        short = "well-scaled" if pname.startswith("well") else "badly scaled"
+        for label, key in (("Jacobi SVRG, theory-prescribed", "theory"), ("Jacobi SVRG, tuned lr", "tuned")):
+            ev = pr[key]["evals_to_target_median"]
+            ev_txt = "not reached" if math.isinf(ev) else f"{ev:,.0f}".replace(",", r"\,")
+            jt.append(rf"{short} & {label} & ${sci(pr[key]['final_gap_median'])}$ & {ev_txt} \\")
+    jt += [r"\bottomrule", r"\end{tabular}",
+           r"\caption{Jacobi-preconditioned SVRG on the datasets and seeds of Tables~\ref{tab:ls} and~\ref{tab:hetero}. The theory-prescribed row uses no tuning at all.}",
+           r"\label{tab:jacobi}", r"\end{table}"]
     tables = [
+        "\n".join(jt),
         table("ablation", "volatile",
               r"Least squares, volatile regime. Median final loss gap and sample-gradient evaluations to reach $10^{-8}$ of the initial gap, held-out seeds. $\dagger$: best learning rate on the edge of the grid.",
               "tab:ls"),

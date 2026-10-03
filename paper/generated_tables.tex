@@ -1,6 +1,23 @@
 \begin{table}[h]
 \centering
 \small
+\begin{tabular}{@{}llrr@{}}
+\toprule
+Problem & Method & median final gap & evals to target \\
+\midrule
+well-scaled & Jacobi SVRG, theory-prescribed & $6.2\times 10^{-30}$ & 75\,192 \\
+well-scaled & Jacobi SVRG, tuned lr & $4.0\times 10^{-31}$ & 49\,152 \\
+badly scaled & Jacobi SVRG, theory-prescribed & $2.6\times 10^{-29}$ & 73\,848 \\
+badly scaled & Jacobi SVRG, tuned lr & $1.8\times 10^{-29}$ & 49\,152 \\
+\bottomrule
+\end{tabular}
+\caption{Jacobi-preconditioned SVRG on the datasets and seeds of Tables~\ref{tab:ls} and~\ref{tab:hetero}. The theory-prescribed row uses no tuning at all.}
+\label{tab:jacobi}
+\end{table}
+
+\begin{table}[h]
+\centering
+\small
 \begin{tabular}{@{}lrrr@{}}
 \toprule
 Method & tuned lr & median final gap & evals to target \\
