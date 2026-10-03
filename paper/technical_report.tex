@@ -1,0 +1,183 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\graphicspath{{../docs/figures/}}
+\input{numbers.tex}
+
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\theoremstyle{remark}
+\newtheorem*{remark}{Remark}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\norm}[1]{\lVert #1\rVert}
+\newcommand{\ghat}{\hat g}
+
+\title{Coordinate-wise SVRG for Low Signal-to-Noise Objectives:\\Theory, Tuned Ablations, and Negative Results}
+\author{Kunal}
+\date{Technical report (draft)}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+I implement a variance-reduced optimizer with adaptive coordinate scaling (``Coordinate SVRG'') in PyTorch and JAX, validate both against an independent NumPy oracle, and evaluate it on synthetic low signal-to-noise finite-sum problems built to resemble noisy tick data.
+I prove a variance bound that explains the method's behaviour, a staleness-controlled variant of it for the adaptive engine, a numerical-safety property, and a short corollary explaining when diagonal scaling helps.
+Against learning-rate-tuned Adam and SGD with momentum (constant and cosine-decay), variance reduction reaches float64 round-off on well-scaled convex problems; adaptive scaling helps only when features are badly scaled; and on a noisy non-convex fit the more precisely optimised model generalises \emph{worse}.
+There is no wall-clock win over a direct solve at the sizes tested, and no benefit for walk-forward signal tracking.
+All data are synthetic, all models small, and the PyTorch and JAX engines did not produce the reported numbers; the report states these limits explicitly.
+\end{abstract}
+
+\section{Introduction}
+Stochastic gradient methods stall on noisy finite-sum objectives because per-sample gradients do not vanish at the optimum, so mini-batch variance is bounded below. Variance-reduced methods such as SVRG \cite{johnson2013} remove that floor with a control variate built from a periodic snapshot. Quantitative-finance estimation problems (calibrating linear and generalised-linear signal models on noisy tick data) are finite sums with very low signal-to-noise, which makes the question natural: does variance reduction, combined with Adam-style coordinate scaling \cite{kingma2015}, help there?
+
+\paragraph{Contributions.}
+\begin{enumerate}[leftmargin=*,itemsep=2pt]
+\item A reference implementation in PyTorch and JAX with four enforced invariants (Section~\ref{sec:method}), tested step-for-step against an independent NumPy oracle, with adversarial-input fuzz tests.
+\item Four short results (Section~\ref{sec:theory}): a variance bound (Lemma~\ref{lem:var}), a staleness-controlled version valid for the adaptive engine (Proposition~\ref{prop:stale}), a numerical-safety property (Proposition~\ref{prop:safe}), and a preconditioning corollary (Proposition~\ref{prop:precond}) that predicts when adaptive scaling helps.
+\item A learning-rate-tuned ablation with held-out seeds and paired bootstrap intervals across ten experiments, including negative and null results.
+\end{enumerate}
+I make no claim about real markets, deep networks, or large-scale wall-clock performance.
+
+\section{Method}\label{sec:method}
+Let $F(w)=\frac1n\sum_{i=1}^n f_i(w)$. Given a snapshot $\tilde w$ with full gradient $\mu=\nabla F(\tilde w)$ and a mini-batch $B$, the variance-reduced gradient is
+\[
+\ghat(w)=g_B(w)-g_B(\tilde w)+\mu ,\qquad g_B=\tfrac1{|B|}\textstyle\sum_{i\in B}\nabla f_i .
+\]
+The engine then applies coordinate-wise momentum and second-moment tracking,
+\[
+m\leftarrow\beta_1 m+(1-\beta_1)\ghat,\quad v\leftarrow\beta_2 v+(1-\beta_2)\ghat^{2},\quad
+w\leftarrow w-\eta\,\mathrm{clip}\!\Big(\frac{m/(1-\beta_1^t)}{\max\{\sqrt{v/(1-\beta_2^t)},\,\varepsilon_{\rm floor}\}},\,\pm c\Big).
+\]
+Four invariants are enforced and tested: (1)~the variance of $\ghat$ vanishes as $w\to\tilde w$; (2)~$g_B(w)$ and $g_B(\tilde w)$ use the \emph{same} batch (one batch identifier is passed to both evaluations); (3)~in PyTorch, parameters, snapshot, $\mu$, $m$, $v$ live in contiguous flat buffers; (4)~gradients are sanitised and bounded and the denominator is \emph{clamped}, not offset, so no division can produce NaN or Inf.
+
+\section{Theory}\label{sec:theory}
+Let each $f_i$ have $L_i$-Lipschitz gradient and write $\bar L^2=\frac1n\sum_iL_i^2$.
+
+\begin{lemma}[Unbiasedness]\label{lem:unb}
+For any snapshot, $\E_B[\ghat(w)]=\nabla F(w)$.
+\end{lemma}
+\begin{proof}
+$\E_B g_B(w)=\nabla F(w)$ and $\E_B g_B(\tilde w)=\mu$.
+\end{proof}
+
+\begin{lemma}[Variance bound]\label{lem:var}
+For uniform mini-batches of size $b$ (with or without replacement),
+\[
+\E\norm{\ghat(w)-\nabla F(w)}^2\;\le\;\frac{\bar L^2}{b}\,\norm{w-\tilde w}^2 .
+\]
+For least squares the error is exactly $(H_B-H)(w-\tilde w)$, so scaling the displacement by $s$ scales the variance by exactly $s^2$.
+\end{lemma}
+\begin{proof}
+With $Y_i=\nabla f_i(w)-\nabla f_i(\tilde w)$, $\ghat-\nabla F=\bar Y_B-\bar Y$, a sample-mean error. Its variance is $\sigma^2/b$ (times $\frac{n-b}{n-1}\le1$ without replacement) with $\sigma^2=\frac1n\sum_i\norm{Y_i-\bar Y}^2\le\frac1n\sum_i\norm{Y_i}^2\le \bar L^2\norm{w-\tilde w}^2$.
+\end{proof}
+
+Plain mini-batch SGD has no such control: at a stationary point of a noisy problem, per-sample gradients do not vanish, so its variance has a positive floor. The variance of $\ghat$ depends on the snapshot distance, not on the data noise; this is why the snapshot must be refreshed.
+
+\begin{proposition}[Staleness-controlled variance]\label{prop:stale}
+If the normalised update is clipped to $\pm c$ per coordinate, then $K$ steps after a snapshot,
+\[
+\E\norm{\ghat-\nabla F}^2\le\frac{\bar L^2\,d}{b}\,(\eta c K)^2 .
+\]
+\end{proposition}
+\begin{proof}
+Each coordinate moves at most $\eta c$ per step, so $\norm{w-\tilde w}_2^2\le d(\eta cK)^2$; apply Lemma~\ref{lem:var}.
+\end{proof}
+This holds for any adaptive normalisation provided the step is clipped. It is very loose: across snapshot intervals from \ExpNineKmin{} to \ExpNineKmax{}, measured variance was at most $\ExpNineMaxRatio$ of the bound.
+
+\begin{proposition}[Numerical safety]\label{prop:safe}
+Let $G=\tfrac14\sqrt{\text{realmax}}$ for the working precision. After sanitising NaN$\to0$ and $\pm\infty\to\pm G$ and clipping to $[-G,G]$, $|m_t|\le G$ and $0\le v_t\le G^2$ by induction; the denominator is at least $\varepsilon_{\rm floor}>0$ and the final ratio is clipped, so every step is finite with $|\Delta w_j|\le\eta c$. In single precision the unclipped quotient is itself finite whenever $1-\beta_1\ge10^{-4}$.
+\end{proposition}
+This is checked by randomised adversarial tests (zeros, denormals, $10^{\pm38}$, $\pm\infty$, NaN) in float32 and float64.
+
+\begin{proposition}[Frozen diagonal preconditioner]\label{prop:precond}
+Let $D\succ0$ be diagonal and fixed, and consider $w\leftarrow w-\eta D^{-1}\ghat$. If $\tilde f_i(u)=f_i(D^{-1/2}u)$ are $L_D$-smooth and $\tilde F$ is $\gamma_D$-strongly convex, the Johnson--Zhang theorem \cite{johnson2013} holds verbatim with $(L_D,\gamma_D)$: for step $\eta<1/(2L_D)$ and $m$ inner steps, $\E[F(\tilde w_s)-F(w^\ast)]\le\alpha_D^{\,s}\,(F(\tilde w_0)-F(w^\ast))$ with
+\[
+\alpha_D=\frac{1}{\gamma_D\eta(1-2L_D\eta)m}+\frac{2L_D\eta}{1-2L_D\eta}.
+\]
+\end{proposition}
+\begin{proof}
+Put $u=D^{1/2}w$. Then $\nabla\tilde f_i(u)=D^{-1/2}\nabla f_i(w)$, so the SVRG step in $u$ is $D^{1/2}$ applied to the preconditioned step in $w$: the iterations coincide up to a linear change of coordinates (verified numerically in the test suite), with equal function values.
+\end{proof}
+The rate depends on $\kappa_D=L_D/\gamma_D$. For least squares with Jacobi scaling $D=\mathrm{diag}(X^\top X/n)$, $\kappa_D$ is invariant to rescaling feature columns, and Jacobi scaling is within a factor of the dimension of the best diagonal scaling \cite{vandersluis1969}. On the badly scaled problem below, $\kappa$ falls from $\ExpTenBadRaw$ to $\ExpTenBadJacobi$; on equal-variance features it does not move ($\ExpTenGoodRaw\to\ExpTenGoodJacobi$).
+\begin{remark}
+The engine's preconditioner $\mathrm{diag}(\sqrt{\hat v_t})$ is not frozen and tracks gradient scale rather than Hessian-diagonal scale. The proposition covers the frozen idealisation; the link to the adaptive engine is empirical consistency, not a theorem. \textbf{I prove no convergence theorem for the adaptive engine itself.} Adam-type methods can fail to converge in general \cite{reddi2018}, and normalisation keeps the step near $\eta$ per coordinate even as gradients shrink, which explains the constant-rate plateau seen in Section~\ref{sec:results}.
+\end{remark}
+
+\section{Experimental protocol}
+All results use a NumPy reference implementation of the update rule; the PyTorch and JAX engines are tested against it but \emph{did not produce the numbers reported here}. Data come from a simulator: AR(1) features, a hidden alpha with drift and regime switches, Gaussian noise at three levels, heavy-tailed toxic-flow shocks and arbitrage jumps (empirical SNR about $-4$\,dB in the default regime).
+Every method receives its own learning-rate sweep on tuning seeds and is scored on disjoint held-out seeds. Budgets count sample-gradient evaluations; SVRG is charged for double gradients and every full-gradient snapshot pass. Baselines are Adam (with the same clamped denominator) and SGD with momentum, each with constant and cosine-decay learning rates. Differences are reported in decades of $\log_{10}$(final gap) with 95\% paired bootstrap intervals over seeds and win counts; no multiple-comparison correction is applied. Where one method sits at float64 round-off ($\approx10^{-31}$), the \emph{magnitude} of a difference is not meaningful, only the win count.
+
+\section{Results}\label{sec:results}
+
+\subsection{Variance reduction dominates on well-scaled convex problems}
+On least squares (volatile regime, Table~\ref{tab:ls}) Coordinate SVRG reaches a median gap of $\ExpOneSvrgGap$, at float64 round-off, and beats the best tuned baseline (\ExpOneBestBaseline, $\ExpOneBaselineGap$) on \ExpOneWins{} held-out seeds. Across the three noise regimes the best baseline stops at \ExpOneBaselineRange{}. On $\ell_2$-regularised logistic regression for the sign of the return the win count is \ExpFourWins.
+
+\input{generated_tables.tex}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\linewidth]{ablation_curves.png}
+\caption{Least squares, three noise regimes: loss gap against sample-gradient evaluations (median and IQR over held-out seeds). Curves are clamped at $10^{-18}$ for plotting.}
+\end{figure}
+
+\subsection{Adaptive scaling helps only when features are badly scaled}
+With column scales spread over three decades (Table~\ref{tab:hetero}), Coordinate SVRG at a constant rate beats SVRG with plain momentum by \ExpSixAdaptiveVsMomentum{} decades (95\% CI \ExpSixAdaptiveCI, \ExpSixAdaptiveWins{} seeds), yet plateaus at a median gap of $\ExpSixConstGap$, as anticipated in Section~\ref{sec:theory}. Adding cosine decay removes the plateau (median $\ExpSixCosineGap$) and beats the best tuned baseline, Adam with cosine decay ($\ExpSixAdamCosineGap$), by \ExpSixCosineVsAdamCosine{} decades (CI \ExpSixCosineCI, \ExpSixCosineWins{} seeds). On well-scaled data the adaptive component does not help and, at constant rate on the larger problem, hurts. Proposition~\ref{prop:precond} predicts this pattern through $\kappa_D$.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.6\linewidth]{hetero_curves.png}
+\caption{Badly scaled features. Only variance reduction with adaptive scaling and a decaying rate reaches the target.}
+\end{figure}
+
+\subsection{The variance law along a real trajectory}
+Along one run (Figure~\ref{fig:var}), mini-batch SGD variance stays between \ExpTwoSgdMin{} and \ExpTwoSgdMax{}, while the variance of $\ghat$ falls from $\ExpTwoVrStart$ to $\ExpTwoVrEnd$. In all \ExpTwoProbes{} probes, each at worst-case snapshot staleness, measured variance was within the Lemma~\ref{lem:var} bound (\ExpTwoWithinLemma\%) and the Proposition~\ref{prop:stale} bound (\ExpTwoWithinProp\%).
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.55\linewidth]{variance_decay.png}
+\caption{Gradient variance along the trajectory, with the Lemma~\ref{lem:var} bound.}\label{fig:var}
+\end{figure}
+
+\subsection{Non-convex fit: sharper stationarity, worse generalisation}
+For a one-hidden-layer tanh network the squared full-gradient norm of Coordinate SVRG with cosine decay is \ExpSevenDecades{} decades from the best baseline (\ExpSevenWins{} seeds). On a held-out random split, however, with learning rates tuned on training loss, its test loss is \ExpEightSvrgTest{} against \ExpEightBaselineTest{} for \ExpEightBaselineName{} (paired difference \ExpEightGap, 95\% CI \ExpEightCI; the noise floor is $0.125$), while its training loss is lower (\ExpEightSvrgTrain{} against \ExpEightBaselineTrain). It fits the training noise harder. Tuning on validation loss could change the ranking. For held-out logistic regression all methods are indistinguishable (test log-loss \ExpEightLogisticLow{} to \ExpEightLogisticHigh, about \ExpEightAccuracy\% accuracy).
+
+\subsection{Snapshot interval and wall-clock}
+Evaluations to the target are U-shaped in the snapshot interval $K$: best at $K=\ExpNineBestK$ (\ExpNineBestEvals{} evaluations), within a factor \ExpNineMidFactor{} for $16\le K\le256$, \ExpNineSmallFactor$\times$ worse at $K=\ExpNineKmin$ and \ExpNineLargeFactor$\times$ worse at $K=\ExpNineKmax$ (Figure~\ref{fig:si}). On a larger problem ($n=\ExpFiveN$, $d=\ExpFiveD$) SVRG with momentum reaches the target in \ExpFiveSvrgSeconds\,s on one NumPy core, whereas the normal equations take \ExpFiveNormalSeconds\,s and \texttt{lstsq} \ExpFiveLstsqSeconds\,s: a direct solve still matches SVRG at this size, and the iterative timing excludes the cost of tuning the learning rate.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\linewidth]{snapshot_interval.png}
+\caption{Sensitivity to the snapshot interval, and the Proposition~\ref{prop:stale} ratio across intervals.}\label{fig:si}
+\end{figure}
+
+\subsection{Walk-forward signal tracking: no benefit}
+In a rolling re-estimation of a drifting alpha under a compute budget, every method's out-of-sample correlation with the clean signal differs from closed-form OLS by at most \ExpThreeMaxICDiff, against a spread across datasets of about \ExpThreeIQR; paired intervals often exclude zero but the effects are negligible, and SVRG never beats Adam. The problem is too small for the choice of optimizer to matter.
+
+\section{Limitations and threats to validity}
+\begin{itemize}[leftmargin=*,itemsep=2pt]
+\item \textbf{Synthetic data.} The simulator generates what the models assume. Nothing here is evidence of real-market performance.
+\item \textbf{Convex bias.} Most experiments are convex, the best case for SVRG; variance reduction is known to help far less in deep learning \cite{defazio2019}. One small non-convex network is not evidence about deep models.
+\item \textbf{Scale.} The largest problem has $n=\ExpFiveN$, $d=\ExpFiveD$, where a direct solve is as fast as any iterative method.
+\item \textbf{Engines not executed by the author's sandbox.} The PyTorch and JAX engines are validated by tests written against the oracle, to be run on the reader's machine; the reported numbers are from the NumPy oracle.
+\item \textbf{No convergence proof for the adaptive engine}; the cosine-decay results are empirical.
+\item \textbf{Statistics.} Seed counts range from 3 to 20; intervals are bootstrap intervals over seeds; no multiple-comparison correction; learning rates are tuned on training loss in the non-convex and logistic held-out checks.
+\item \textbf{Tuning cost} is excluded from the iterative wall-clock times.
+\end{itemize}
+
+\section{Reproducibility}
+The repository fixes every random stream from one seed. \texttt{make test} runs the invariant, oracle, differential and fuzz tests; \texttt{make experiments} regenerates all results and figures; \texttt{make report} rebuilds this document, whose numbers are macros generated from \texttt{results/experiments.json}. A continuous-integration workflow runs the tests on CPU PyTorch and JAX.
+
+\begin{thebibliography}{9}
+\bibitem{johnson2013} R.~Johnson, T.~Zhang. Accelerating stochastic gradient descent using predictive variance reduction. \emph{NeurIPS}, 2013.
+\bibitem{kingma2015} D.~Kingma, J.~Ba. Adam: a method for stochastic optimization. \emph{ICLR}, 2015.
+\bibitem{reddi2018} S.~Reddi, S.~Kale, S.~Kumar. On the convergence of Adam and beyond. \emph{ICLR}, 2018.
+\bibitem{defazio2019} A.~Defazio, L.~Bottou. On the ineffectiveness of variance reduced optimization for deep learning. \emph{NeurIPS}, 2019.
+\bibitem{vandersluis1969} A.~van der Sluis. Condition numbers and equilibration of matrices. \emph{Numerische Mathematik} 14, 1969.
+\end{thebibliography}
+
+\end{document}
