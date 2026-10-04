@@ -822,6 +822,73 @@ def experiment_conditioning(cfg: Dict[str, Any], args: argparse.Namespace) -> Di
     return out
 
 
+def append_jacobi_variant(
+    out: Dict[str, Any],
+    regime: str,
+    factory: ObjectiveFactory,
+    diag_fn: Callable[[Any], FloatArray],
+    *,
+    seed0: int,
+    sigma: float,
+    tune_seeds: int,
+    eval_seeds: int,
+    epochs: int,
+    batch_size: int,
+    interval: int,
+    lr_points: int,
+    lr_min_exp: float,
+    lr_max_exp: float,
+    target_ratio: float,
+) -> Tuple[float, float]:
+    """Tune and score Jacobi SVRG on the datasets/seeds of ``run_ablation`` and add it as a variant."""
+    tune_sets = [factory(seed0 + 1000 + i, sigma) for i in range(tune_seeds)]
+    eval_sets = [factory(seed0 + 2000 + i, sigma) for i in range(eval_seeds)]
+    for o in tune_sets + eval_sets:
+        o.prepare()
+    n: int = tune_sets[0].n
+    budget: int = int(epochs * n)
+    lr_grid: FloatArray = 10.0 ** np.linspace(lr_min_exp, lr_max_exp, lr_points)
+    scores: List[float] = []
+    for lr in lr_grid:
+        gaps = [
+            diag_precond_svrg(o, diag_fn(o), float(lr), interval, batch_size, budget, "last",
+                              seed=seed0 + 1000 + j,
+                              sampler=DeterministicBatchSampler(n, batch_size, seed0 + 1000 + j)).final_gap
+            for j, o in enumerate(tune_sets)
+        ]
+        scores.append(float(np.median(gaps)))
+    best_idx: int = int(np.argmin(np.where(np.isfinite(scores), scores, np.inf)))
+    best_lr: float = float(lr_grid[best_idx])
+    block = out["regimes"][regime]
+    grid: List[float] = list(block["variants"]["svrg_adam"]["curve_evals"])
+    finals: List[float] = []
+    curves: List[List[float]] = []
+    to_target: List[float] = []
+    for i, o in enumerate(eval_sets):
+        run = diag_precond_svrg(o, diag_fn(o), best_lr, interval, batch_size, budget, "last",
+                                seed=seed0 + 2000 + i,
+                                sampler=DeterministicBatchSampler(n, batch_size, seed0 + 2000 + i))
+        finals.append(run.final_gap)
+        curves.append(gaps_on_grid(run.evals, run.gaps, grid))
+        target = target_ratio * run.gaps[0]
+        hit = [e for e, g in zip(run.evals, run.gaps) if g <= target]
+        to_target.append(hit[0] if hit else float("inf"))
+    q25, q50, q75 = quartiles(finals)
+    arr = np.asarray(curves, dtype=np.float64)
+    block["variants"]["svrg_jacobi"] = {
+        "best_lr": best_lr, "best_lr_at_grid_edge": bool(best_idx in (0, len(lr_grid) - 1)),
+        "tune_scores": scores, "final_gap_q25": q25, "final_gap_median": q50, "final_gap_q75": q75,
+        "final_gaps": finals, "final_loss_median": float("nan"),
+        "evals_to_target_median": float(np.median(to_target)),
+        "seconds_to_target_median": float("nan"),
+        "curve_evals": grid, "curve_seconds_median": [float("nan")] * len(grid),
+        "curve_q25": np.percentile(arr, 25, axis=0).tolist(),
+        "curve_median": np.percentile(arr, 50, axis=0).tolist(),
+        "curve_q75": np.percentile(arr, 75, axis=0).tolist(),
+    }
+    return best_lr, q50
+
+
 def scaled_logistic_factory(base: RegimeConfig, l2: float, decades: float) -> ObjectiveFactory:
     """Logistic regression on sign(return) with column scales spread over ``decades`` decades."""
     def make(seed: int, sigma: float) -> Any:
@@ -852,58 +919,211 @@ def experiment_logistic_scaled(cfg: Dict[str, Any], args: argparse.Namespace) ->
         tune_seeds=args.lg_tune_seeds, eval_seeds=args.lg_eval_seeds,
         seed_offset=11000, lr_points=args.lg_lr_points,
     )
-    seed0: int = int(cfg["seed"]) + 11000
-    tune_sets = [factory(seed0 + 1000 + i, sigma) for i in range(args.lg_tune_seeds)]
-    eval_sets = [factory(seed0 + 2000 + i, sigma) for i in range(args.lg_eval_seeds)]
-    for o in tune_sets + eval_sets:
-        o.prepare()
-    n: int = tune_sets[0].n
-    budget: int = int(args.lg_epochs * n)
-    interval: int = int(cfg["optimizer"]["snapshot_interval"])
-    lr_grid: FloatArray = 10.0 ** np.linspace(args.lr_min_exp, args.lr_max_exp, args.lg_lr_points)
-    scores: List[float] = []
-    for lr in lr_grid:
-        gaps = [
-            diag_precond_svrg(o, jacobi_diag_logistic(o.features, o.l2), float(lr), interval, args.lg_batch,
-                              budget, "last", seed=seed0 + 1000 + j,
-                              sampler=DeterministicBatchSampler(n, args.lg_batch, seed0 + 1000 + j)).final_gap
-            for j, o in enumerate(tune_sets)
-        ]
-        scores.append(float(np.median(gaps)))
-    best_idx: int = int(np.argmin(np.where(np.isfinite(scores), scores, np.inf)))
-    best_lr: float = float(lr_grid[best_idx])
-    block = out["regimes"]["volatile"]
-    grid: List[float] = list(block["variants"]["svrg_adam"]["curve_evals"])
-    finals: List[float] = []
-    curves: List[List[float]] = []
-    to_target: List[float] = []
-    for i, o in enumerate(eval_sets):
-        run = diag_precond_svrg(o, jacobi_diag_logistic(o.features, o.l2), best_lr, interval, args.lg_batch,
-                                budget, "last", seed=seed0 + 2000 + i,
-                                sampler=DeterministicBatchSampler(n, args.lg_batch, seed0 + 2000 + i))
-        finals.append(run.final_gap)
-        curves.append(gaps_on_grid(run.evals, run.gaps, grid))
-        target = args.target_ratio * run.gaps[0]
-        hit = [e for e, g in zip(run.evals, run.gaps) if g <= target]
-        to_target.append(hit[0] if hit else float("inf"))
-    q25, q50, q75 = quartiles(finals)
-    arr = np.asarray(curves, dtype=np.float64)
-    block["variants"]["svrg_jacobi"] = {
-        "best_lr": best_lr, "best_lr_at_grid_edge": bool(best_idx in (0, len(lr_grid) - 1)),
-        "tune_scores": scores, "final_gap_q25": q25, "final_gap_median": q50, "final_gap_q75": q75,
-        "final_gaps": finals, "final_loss_median": float("nan"),
-        "evals_to_target_median": float(np.median(to_target)),
-        "seconds_to_target_median": float("nan"),
-        "curve_evals": grid, "curve_seconds_median": [float("nan")] * len(grid),
-        "curve_q25": np.percentile(arr, 25, axis=0).tolist(),
-        "curve_median": np.percentile(arr, 50, axis=0).tolist(),
-        "curve_q75": np.percentile(arr, 75, axis=0).tolist(),
-    }
+    best_lr, q50 = append_jacobi_variant(
+        out, "volatile", factory, lambda o: jacobi_diag_logistic(o.features, o.l2),
+        seed0=int(cfg["seed"]) + 11000, sigma=sigma, tune_seeds=args.lg_tune_seeds,
+        eval_seeds=args.lg_eval_seeds, epochs=args.lg_epochs, batch_size=args.lg_batch,
+        interval=int(cfg["optimizer"]["snapshot_interval"]), lr_points=args.lg_lr_points,
+        lr_min_exp=args.lr_min_exp, lr_max_exp=args.lr_max_exp, target_ratio=args.target_ratio,
+    )
     print(f"  [exp12] svrg_jacobi              lr={best_lr:.2e}  final gap median {fmt(q50)}")
     out["description"] = (f"Logistic regression on sign(return) with column scales over {args.het_decades:g} decades, "
                           f"L2={args.lg_l2:g}, n={base.n_samples}, d={base.n_features}, batch {out['batch_size']}, "
                           f"snapshot every {out['snapshot_interval']} steps; Jacobi SVRG added with D = 0.25 mean(x^2) + L2")
     return out
+
+
+def hessian_conditioning(hess: FloatArray, diag: FloatArray) -> Dict[str, float]:
+    """cond(H) and cond(D^{-1/2} H D^{-1/2}) for a symmetric positive definite ``hess``."""
+    raw: FloatArray = np.linalg.eigvalsh(hess)
+    scaled: FloatArray = hess / np.sqrt(np.outer(diag, diag))
+    jac: FloatArray = np.linalg.eigvalsh(scaled)
+    return {
+        "cond_raw": float(raw[-1] / raw[0]), "cond_jacobi": float(jac[-1] / jac[0]),
+        "ratio": float((raw[-1] / raw[0]) / (jac[-1] / jac[0])),
+    }
+
+
+REAL_TASKS: Dict[str, Dict[str, Any]] = {
+    "breast_cancer": {"kind": "logistic", "batch": 32, "title": "Breast Cancer Wisconsin (diagnostic), logistic regression"},
+    "wine": {"kind": "logistic", "batch": 16, "title": "Wine (class 0 vs rest), logistic regression"},
+    "diabetes": {"kind": "least_squares", "batch": 32, "title": "Diabetes (raw, unscaled features), least squares"},
+}
+
+
+def load_real_task(name: str, l2: float) -> Any:
+    """Load a bundled scikit-learn dataset with RAW (unstandardised) features plus an intercept."""
+    from sklearn.datasets import load_breast_cancer, load_diabetes, load_wine
+
+    if name == "breast_cancer":
+        d = load_breast_cancer()
+        labels = np.where(d.target == 1, 1.0, -1.0)
+        features = d.data.astype(np.float64)
+    elif name == "wine":
+        d = load_wine()
+        labels = np.where(d.target == 0, 1.0, -1.0)
+        features = d.data.astype(np.float64)
+    elif name == "diabetes":
+        d = load_diabetes(scaled=False)
+        labels = d.target.astype(np.float64)
+        features = d.data.astype(np.float64)
+    else:
+        raise ValueError(f"unknown real task {name}")
+    features = np.hstack([features, np.ones((features.shape[0], 1))])
+    if REAL_TASKS[name]["kind"] == "logistic":
+        return LogisticRegression(features, labels, l2)
+    return LeastSquares(features, labels)
+
+
+def experiment_real(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    """Experiment 13: real data with raw, badly scaled features (no synthetic generator involved)."""
+    try:
+        import sklearn  # noqa: F401
+    except ImportError:
+        print("  [exp13] scikit-learn not installed; skipping real-data experiment")
+        return {}
+    local = argparse.Namespace(**vars(args))
+    local.lr_min_exp, local.lr_max_exp = args.real_lr_min_exp, args.real_lr_max_exp
+    out: Dict[str, Any] = {"tasks": {}}
+    for name, spec in REAL_TASKS.items():
+        obj = load_real_task(name, args.real_l2)
+        obj.prepare()
+        n: int = obj.n
+        batch: int = int(spec["batch"])
+        interval: int = max(8, int(2 * n / batch))
+        factory: ObjectiveFactory = lambda seed, sigma, _o=obj: _o  # same data, different seeds
+        block = run_ablation(
+            cfg, local, factory, tag=f"exp13/{name}", regimes={"real": 0.0},
+            epochs=args.real_epochs, batch_size=batch,
+            tune_seeds=args.real_tune_seeds, eval_seeds=args.real_eval_seeds,
+            seed_offset=12000 + 100 * list(REAL_TASKS).index(name), lr_points=args.real_lr_points,
+            snapshot_interval=interval,
+        )
+        diag_fn = (lambda o: jacobi_diag_logistic(o.features, o.l2)) if spec["kind"] == "logistic" \
+            else (lambda o: jacobi_diag_least_squares(o.features))
+        best_lr, q50 = append_jacobi_variant(
+            block, "real", factory, diag_fn,
+            seed0=int(cfg["seed"]) + 12000 + 100 * list(REAL_TASKS).index(name), sigma=0.0,
+            tune_seeds=args.real_tune_seeds, eval_seeds=args.real_eval_seeds, epochs=args.real_epochs,
+            batch_size=batch, interval=interval, lr_points=args.real_lr_points,
+            lr_min_exp=args.real_lr_min_exp, lr_max_exp=args.real_lr_max_exp, target_ratio=args.target_ratio,
+        )
+        hess = obj._hessian(obj.optimum) if spec["kind"] == "logistic" else obj.hessian
+        cond = hessian_conditioning(hess, diag_fn(obj))
+        col_std = obj.features[:, :-1].std(axis=0)
+        block["conditioning"] = cond
+        block["feature_scale_decades"] = float(np.log10(col_std.max() / col_std.min()))
+        block["description"] = (f"{spec['title']}; n={n}, d={obj.d} (incl. intercept), raw features spanning "
+                                f"{block['feature_scale_decades']:.1f} decades of scale; batch {batch}, snapshot every {interval} steps; "
+                                "Jacobi SVRG added")
+        out["tasks"][name] = block
+        print(f"  [exp13] {name:<14} cond(H) {cond['cond_raw']:.2e} -> {cond['cond_jacobi']:.2e}; "
+              f"jacobi lr={best_lr:.2e} final gap {fmt(q50)}")
+    return out
+
+
+INVARIANT_FUZZ_VALUES: List[float] = [
+    0.0, 1e-45, 1e-38, 1e-30, 1e-15, 1e-8, 1.0, 1e8, 1e18, 1e30, 3e38,
+    -1e-30, -1.0, -1e30, -3e38, float("inf"), float("-inf"), float("nan"),
+]
+
+
+def _naive_adam_steps(
+    mode: str, rng: np.random.Generator, steps: int, beta1: float, beta2: float, lr: float,
+    pool: Sequence[float],
+) -> bool:
+    """Run VR-Adam in float32 under adversarial gradients; return True if the weights stayed finite.
+
+    ``naive``      additive eps, no sanitisation, no clip (the textbook formula).
+    ``clamp_only`` denominator clamped, but gradients are not sanitised or bounded and the ratio is not clipped.
+    """
+    dim = 6
+    w = rng.standard_normal(dim).astype(np.float32)
+    m = np.zeros(dim, dtype=np.float32)
+    v = np.zeros(dim, dtype=np.float32)
+    floor = np.float32(1e-15)
+    mu = np.array([pool[i] for i in rng.integers(0, len(pool), dim)], dtype=np.float32)
+    with np.errstate(all="ignore"):
+        for t in range(1, steps + 1):
+            g_live = np.array([pool[i] for i in rng.integers(0, len(pool), dim)], dtype=np.float32)
+            g_snap = np.array([pool[i] for i in rng.integers(0, len(pool), dim)], dtype=np.float32)
+            g = g_live - g_snap + mu
+            m = np.float32(beta1) * m + np.float32(1.0 - beta1) * g
+            v = np.float32(beta2) * v + np.float32(1.0 - beta2) * g * g
+            m_hat = m / np.float32(1.0 - beta1 ** t)
+            v_hat = v / np.float32(1.0 - beta2 ** t)
+            if mode == "naive":
+                update = m_hat / (np.sqrt(v_hat) + np.float32(1e-15))
+            else:
+                update = m_hat / np.maximum(np.sqrt(v_hat), floor)
+            w = w - np.float32(lr) * update
+            if not np.all(np.isfinite(w)):
+                return False
+    return True
+
+
+def experiment_invariants(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    """Experiment 14: what breaks when an invariant is violated.
+
+    (a) Sample alignment: take the snapshot gradient on an *independent* batch instead of the same one.
+    (b) Coordinate safeguards: textbook Adam, clamp-only, and the full guard set under adversarial inputs.
+    """
+    base: RegimeConfig = RegimeConfig.from_dict(cfg)
+    sigma: float = float(cfg["environment"]["noise_sigma_levels"]["volatile"])
+    batch_size: int = int(cfg["training"]["batch_size"])
+    seed0: int = int(cfg["seed"]) + 13000
+    obj = ls_factory(base)(seed0, sigma)
+    obj.prepare()
+    w_star: FloatArray = obj.optimum
+    direction: FloatArray = np.linspace(-1.0, 1.0, obj.d)
+    direction /= np.linalg.norm(direction)
+    mu: FloatArray = obj.full_grad(w_star)
+    rng = np.random.default_rng(seed0 + 1)
+    rows_out: List[Dict[str, float]] = []
+    for delta in (0.0, 0.01, 0.03, 0.1, 0.3, 1.0):
+        w = w_star + delta * direction
+        true_grad = obj.full_grad(w)
+        sums = {"aligned": 0.0, "misaligned": 0.0, "sgd": 0.0}
+        for _ in range(args.inv_probes):
+            rows = np.sort(rng.choice(obj.n, size=batch_size, replace=False))
+            other = np.sort(rng.choice(obj.n, size=batch_size, replace=False))
+            g_live = obj.grad(w, rows)
+            sums["aligned"] += float(np.sum((g_live - obj.grad(w_star, rows) + mu - true_grad) ** 2))
+            sums["misaligned"] += float(np.sum((g_live - obj.grad(w_star, other) + mu - true_grad) ** 2))
+            sums["sgd"] += float(np.sum((g_live - true_grad) ** 2))
+        rows_out.append({"delta": delta, **{k: v / args.inv_probes for k, v in sums.items()}})
+        print(f"  [exp14a] delta={delta:<5} aligned {rows_out[-1]['aligned']:.2e}  "
+              f"misaligned {rows_out[-1]['misaligned']:.2e}  sgd {rows_out[-1]['sgd']:.2e}")
+
+    fuzz_rng = np.random.default_rng(seed0 + 2)
+    configs = [(float(fuzz_rng.choice([0.0, 0.9, 0.99, 0.9999])), float(fuzz_rng.choice([0.0, 0.9, 0.999, 0.9999])),
+                float(10 ** fuzz_rng.uniform(-4, 0))) for _ in range(args.inv_trials)]
+    tiers: Dict[str, List[float]] = {
+        "extreme but finite inputs": [v for v in INVARIANT_FUZZ_VALUES if math.isfinite(v)],
+        "inputs including inf and NaN": list(INVARIANT_FUZZ_VALUES),
+    }
+    rates: Dict[str, Dict[str, float]] = {}
+    for tier, pool in tiers.items():
+        finite: Dict[str, int] = {"naive": 0, "clamp_only": 0, "full": 0}
+        for trial, (b1, b2, lr) in enumerate(configs):
+            for mode in ("naive", "clamp_only"):
+                finite[mode] += int(_naive_adam_steps(mode, np.random.default_rng(trial), 10, b1, b2, lr, pool))
+            ref = ReferenceSVRG(ReferenceConfig(lr=lr, beta1=b1, beta2=b2, snapshot_interval=1000), 6, dtype=np.float32)
+            r2 = np.random.default_rng(trial)
+            w = r2.standard_normal(6).astype(np.float32)
+            pick = lambda: np.array([pool[i] for i in r2.integers(0, len(pool), 6)], dtype=np.float32)
+            ok = True
+            with np.errstate(all="ignore"):
+                ref.refresh_snapshot(w, pick())
+                for _ in range(10):
+                    w = ref.step(w, pick(), pick())
+                    ok = ok and bool(np.all(np.isfinite(w)))
+            finite["full"] += int(ok)
+        rates[tier] = {k: 1.0 - v / args.inv_trials for k, v in finite.items()}
+        print(f"  [exp14b] {tier}: non-finite weights in {args.inv_trials} trials: "
+              + ", ".join(f"{k} {100 * r:.1f}%" for k, r in rates[tier].items()))
+    return {"alignment": rows_out, "failure_rates": rates, "trials": args.inv_trials,
+            "probes": args.inv_probes, "batch_size": batch_size}
 
 
 def experiment_snapshot_interval(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
@@ -1309,6 +1529,18 @@ def significance_lines(results: Dict[str, Any]) -> List[str]:
                     f"| {label} / {regime} | {VARIANT_LABELS[a_name]} vs {VARIANT_LABELS[b_name]} | "
                     f"{med:+.2f} | [{lo:+.2f}, {hi:+.2f}] | {wins}/{len(diff)} |"
                 )
+    if results.get("real", {}).get("tasks"):
+        for tname, tblock in results["real"]["tasks"].items():
+            v = tblock["regimes"]["real"]["variants"]
+            best_base = min(baselines, key=lambda b: v[b]["final_gap_median"])
+            logs = {m: np.log10(np.maximum(np.asarray(v[m]["final_gaps"], dtype=float), 1e-40)) for m in v}
+            for a_name, b_name in (("svrg_jacobi", best_base), ("svrg_jacobi", "svrg_adam_cosine"),
+                                   ("svrg_adam_cosine", best_base), ("svrg_adam", "svrg_momentum")):
+                diff = logs[a_name] - logs[b_name]
+                med, lo, hi = paired_bootstrap(diff)
+                lines.append(
+                    f"| Exp 13 real / {tname} | {VARIANT_LABELS[a_name]} vs {VARIANT_LABELS[b_name]} | "
+                    f"{med:+.2f} | [{lo:+.2f}, {hi:+.2f}] | {int(np.sum(diff < 0))}/{len(diff)} |")
     if "jacobi" in results:
         for pname, pr in results["jacobi"]["problems"].items():
             stored = results.get(pr["stored_key"])
@@ -1532,6 +1764,60 @@ def write_tables(results: Dict[str, Any], path: Path) -> None:
                 f"| {pname} | Jacobi SVRG, tuned lr {tu['best_lr']:.2e}{' †' if tu['best_lr_at_grid_edge'] else ''} | "
                 f"{fmt(tu['final_gap_median'])} | {'not reached' if math.isinf(e_tu) else f'{e_tu:,.0f}'} | | | |")
         lines.append("")
+    if "invariants" in results:
+        iv = results["invariants"]
+        lines += [
+            "### Experiment 14: what breaks when an invariant is violated",
+            "",
+            f"**(a) Sample alignment (invariant 2).** Mean squared error of the gradient estimate on least squares, "
+            f"batch {iv['batch_size']}, {iv['probes']} probes per row, snapshot at the optimum and the current point displaced by `delta`. "
+            "'Misaligned' takes the snapshot gradient on an independent batch.",
+            "",
+            "| delta | aligned (ours) | misaligned | plain mini-batch SGD |",
+            "|---|---|---|---|",
+        ]
+        for row in iv["alignment"]:
+            lines.append(f"| {row['delta']:g} | {row['aligned']:.2e} | {row['misaligned']:.2e} | {row['sgd']:.2e} |")
+        lines += [
+            "",
+            f"**(b) Coordinate safeguards (invariant 4).** Share of {iv['trials']} adversarial float32 trials "
+            "(10 steps, momentum and decay up to 0.9999, gradients drawn from zeros, denormals, 1e-38, 1e30 and 3e38, and in the second tier also "
+            "infinities and NaN) in which the weights became non-finite. These inputs are deliberately hostile; the rates describe that input "
+            "distribution, not typical training.",
+            "",
+            "| Update rule | extreme but finite inputs | inputs including inf and NaN |",
+            "|---|---|---|",
+        ]
+        for label, key in (("textbook Adam (additive eps)", "naive"), ("denominator clamp only", "clamp_only"),
+                           ("full guard set (this repo)", "full")):
+            cells = " | ".join(f"{100 * iv['failure_rates'][tier][key]:.1f}%" for tier in iv["failure_rates"])
+            lines.append(f"| {label} | {cells} |")
+        lines.append("")
+    if results.get("real", {}).get("tasks"):
+        for tname, tblock in results["real"]["tasks"].items():
+            r0 = tblock["regimes"]["real"]
+            lines += [
+                f"### Experiment 13 (real data): {tname}",
+                "",
+                f"{tblock['description']}. Budget: {tblock['budget_epochs']} epochs of sample-gradient evaluations. "
+                f"cond(H) at the optimum falls from {tblock['conditioning']['cond_raw']:.2e} to "
+                f"{tblock['conditioning']['cond_jacobi']:.2e} under Jacobi scaling "
+                f"({tblock['conditioning']['ratio']:.1e}x). Median [IQR] over {len(r0['variants']['svrg_adam']['final_gaps'])} "
+                "optimizer seeds (the data are fixed); the target is "
+                f"{tblock['target_ratio']:g} x the initial gap.",
+                "",
+                "| Method | tuned lr | final gap, median [IQR] | evals to target |",
+                "|---|---|---|---|",
+            ]
+            for variant, r in r0["variants"].items():
+                target = r["evals_to_target_median"]
+                target_txt = "not reached" if math.isinf(target) else f"{target:,.0f}"
+                edge = " †" if r.get("best_lr_at_grid_edge") else ""
+                lines.append(
+                    f"| {VARIANT_LABELS[variant]} | {r['best_lr']:.2e}{edge} | "
+                    f"{fmt(r['final_gap_median'])} [{fmt(r['final_gap_q25'])}, {fmt(r['final_gap_q75'])}] | {target_txt} |")
+            lines.append("")
+        lines += ["† best learning rate sat on the edge of the sweep grid.", ""]
     if "conditioning" in results:
         cd = results["conditioning"]
         lines += [
@@ -1653,6 +1939,35 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
         fig.tight_layout()
         p = out_dir / "walk_forward_ic.png"
         fig.savefig(p, dpi=150); plt.close(fig); written.append(str(p))
+    if "invariants" in results:
+        rows = [r for r in results["invariants"]["alignment"] if r["delta"] > 0]
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.loglog([r["delta"] for r in rows], [r["sgd"] for r in rows], "o-", label="plain mini-batch SGD", color="#8c8c8c", lw=2)
+        ax.loglog([r["delta"] for r in rows], [r["misaligned"] for r in rows], "s-", label="SVRG, misaligned batches", color="#ff7f0e", lw=2)
+        ax.loglog([r["delta"] for r in rows], [r["aligned"] for r in rows], "^-", label="SVRG, aligned batches (ours)", color="#d62728", lw=2)
+        ax.set_xlabel("snapshot distance  ||w - w~||"); ax.set_ylabel("E||g - grad f(w)||^2")
+        ax.set_title("Invariant 2: sample alignment"); ax.grid(alpha=0.3, which="both"); ax.legend(fontsize=8)
+        fig.tight_layout()
+        p = out_dir / "alignment_violation.png"
+        fig.savefig(p, dpi=150); plt.close(fig); written.append(str(p))
+    if results.get("real", {}).get("tasks"):
+        tasks = results["real"]["tasks"]
+        fig, axes = plt.subplots(1, len(tasks), figsize=(5 * len(tasks), 4), sharey=False)
+        axes = np.atleast_1d(axes)
+        for ax, (tname, tblock) in zip(axes, tasks.items()):
+            for variant, r in tblock["regimes"]["real"]["variants"].items():
+                xs = np.asarray(r["curve_evals"])
+                med = np.maximum(np.asarray(r["curve_median"], dtype=float), 1e-18)
+                ax.plot(xs, med, label=VARIANT_LABELS[variant], color=colors[variant], lw=2,
+                        ls="--" if "cosine" in variant else "-")
+            ax.set_xscale("log"); ax.set_yscale("log")
+            ax.set_title(f"{tname} ({tblock['feature_scale_decades']:.1f} decades)")
+            ax.set_xlabel("sample-gradient evaluations"); ax.grid(alpha=0.3, which="both")
+        axes[0].set_ylabel("loss gap  f(w) - f(w*)"); axes[0].legend(fontsize=6)
+        fig.suptitle("Real data, raw unstandardised features (median over optimizer seeds)")
+        fig.tight_layout()
+        p = out_dir / "real_data_curves.png"
+        fig.savefig(p, dpi=150); plt.close(fig); written.append(str(p))
     if "snapshot_interval" in results:
         rows = results["snapshot_interval"]["rows"]
         ks = [r["interval"] for r in rows]
@@ -1708,7 +2023,7 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default=str(REPO_ROOT / "configs" / "stochastic_regime.yaml"))
-    parser.add_argument("--only", nargs="+", type=int, choices=list(range(1, 13)), default=list(range(1, 13)))
+    parser.add_argument("--only", nargs="+", type=int, choices=list(range(1, 15)), default=list(range(1, 15)))
     parser.add_argument("--quick", action="store_true", help="tiny settings for a smoke test")
     parser.add_argument("--tables-only", action="store_true",
                         help="regenerate tables.md and figures from the stored results.json, run nothing")
@@ -1737,6 +2052,17 @@ def main() -> None:
     # experiment 8 (held-out)
     parser.add_argument("--ho-seeds", type=int, default=8)
     parser.add_argument("--ho-test", type=int, default=5000)
+    # experiment 14 (invariant violations)
+    parser.add_argument("--inv-probes", type=int, default=400)
+    parser.add_argument("--inv-trials", type=int, default=2000)
+    # experiment 13 (real data)
+    parser.add_argument("--real-l2", type=float, default=1e-3)
+    parser.add_argument("--real-epochs", type=int, default=1000)
+    parser.add_argument("--real-lr-min-exp", type=float, default=-9.0)
+    parser.add_argument("--real-lr-max-exp", type=float, default=1.0)
+    parser.add_argument("--real-lr-points", type=int, default=21)
+    parser.add_argument("--real-tune-seeds", type=int, default=2)
+    parser.add_argument("--real-eval-seeds", type=int, default=10)
     # experiment 10 (conditioning)
     parser.add_argument("--cond-seeds", type=int, default=5)
     # experiment 9 (snapshot interval)
@@ -1786,6 +2112,8 @@ def main() -> None:
         args.si_intervals, args.si_lr_points, args.si_tune_seeds, args.si_eval_seeds = [8, 32, 128], 3, 1, 2
         args.si_probe_batches = 8
         args.cond_seeds = 2
+        args.inv_probes, args.inv_trials = 40, 100
+        args.real_epochs, args.real_lr_points, args.real_tune_seeds, args.real_eval_seeds = 40, 5, 1, 2
 
     cfg: Dict[str, Any] = load_config(args.config)
     if args.tables_only:
@@ -1836,6 +2164,14 @@ def main() -> None:
     if 12 in args.only:
         print("Experiment 12: scaled logistic regression with Jacobi SVRG")
         results["logscaled"] = experiment_logistic_scaled(cfg, args)
+    if 14 in args.only:
+        print("Experiment 14: invariant violations")
+        results["invariants"] = experiment_invariants(cfg, args)
+    if 13 in args.only:
+        print("Experiment 13: real data with raw features")
+        real = experiment_real(cfg, args)
+        if real:
+            results["real"] = real
 
     out_dir: Path = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
