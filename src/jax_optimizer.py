@@ -23,7 +23,7 @@ The four invariants
    Python-side tensor zoo to flatten; the state is a handful of pytrees that
    XLA fuses element-wise.
 4. Coordinate boundary safeguards: NaN/Inf sanitised, gradients bounded so
-   ``g^2`` stays finite, denominator clamped (not offset), ratio clipped.
+   ``g^2`` stays finite (the operative guard), denominator floored, ratio clipped.
 """
 
 from __future__ import annotations

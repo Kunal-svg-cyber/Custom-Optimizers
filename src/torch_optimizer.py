@@ -21,9 +21,11 @@ The four invariants and where they are enforced
    into one flat buffer, and the snapshot / full gradient / both moments live in
    one flat ``(4, N)`` block. Swapping to the snapshot weights is a single
    ``copy_``.
-4. Coordinate boundary safeguards: the second-moment denominator is *clamped*
-   (never merely offset), gradients are sanitised and bounded, and the final
-   ratio is clipped, so no division can produce NaN or Inf.
+4. Coordinate boundary safeguards: gradients are sanitised and bounded (the
+   operative guard against overflow), the second-moment denominator is floored,
+   and the final ratio is clipped, so no division can produce NaN or Inf.
+   Experiment 14 shows the gradient bound is what prevents failures; the floor
+   alone does not.
 """
 
 from __future__ import annotations
@@ -490,7 +492,7 @@ class CoordinateSVRG(Optimizer):
             torch.div(exp_avg, denom, out=update)
             update.div_(bias1)
         else:
-            # Coordinate boundary safeguard: clamp the denominator, never add to it.
+            # Coordinate boundary safeguard: floor the denominator (the gradient bound above is what prevents overflow).
             denom = g_snap  # snapshot gradients are no longer needed
             torch.sqrt(exp_avg_sq, out=denom)
             denom.div_(math.sqrt(bias2))
