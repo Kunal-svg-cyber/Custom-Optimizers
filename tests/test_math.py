@@ -499,6 +499,66 @@ def test_diag_precond_svrg_with_unit_diagonal_is_plain_svrg() -> None:
     assert not run.diverged and run.gaps[-1] < 1e-9 * run.gaps[0]
 
 
+def test_real_datasets_have_badly_scaled_raw_features() -> None:
+    pytest.importorskip("sklearn")
+    from experiments.run_experiments import REAL_TASKS, load_real_task
+
+    for name in REAL_TASKS:
+        obj = load_real_task(name, 1e-3)
+        std = obj.features[:, :-1].std(axis=0)
+        assert np.log10(std.max() / std.min()) > 1.5          # genuinely badly scaled
+        assert np.all(obj.features[:, -1] == 1.0)              # intercept column
+        obj.prepare()
+        assert np.isfinite(obj.gap(np.zeros(obj.d)))
+
+
+def test_hessian_conditioning_jacobi_is_invariant_to_diagonal_rescaling() -> None:
+    from experiments.run_experiments import hessian_conditioning
+
+    rng = np.random.default_rng(0)
+    a = rng.standard_normal((20, 6))
+    hess = a.T @ a + 0.1 * np.eye(6)
+    scale = 10.0 ** np.linspace(-2, 2, 6)
+    hess_scaled = hess * np.outer(scale, scale)
+    base = hessian_conditioning(hess, np.diag(hess))
+    scaled = hessian_conditioning(hess_scaled, np.diag(hess_scaled))
+    assert abs(scaled["cond_jacobi"] - base["cond_jacobi"]) / base["cond_jacobi"] < 1e-6
+    assert scaled["cond_raw"] > 1e3 * base["cond_raw"]
+
+
+def test_misaligned_batches_are_worse_than_plain_sgd_and_aligned_batches_win() -> None:
+    dataset, sampler, _ = ls_problem(batch_size=16)
+    w_star = dataset.optimal_weights
+    mu = dataset.full_gradient(w_star)
+    direction = np.linspace(-1.0, 1.0, dataset.n_features)
+    direction /= np.linalg.norm(direction)
+    w = w_star + 0.05 * direction
+    true_grad = dataset.full_gradient(w)
+    rng = np.random.default_rng(1)
+    err = {"aligned": 0.0, "misaligned": 0.0, "sgd": 0.0}
+    for _ in range(300):
+        rows = np.sort(rng.choice(dataset.n_samples, size=16, replace=False))
+        other = np.sort(rng.choice(dataset.n_samples, size=16, replace=False))
+        g = sgd_batch_gradient(dataset, rows, w)
+        err["aligned"] += float(np.sum((g - sgd_batch_gradient(dataset, rows, w_star) + mu - true_grad) ** 2))
+        err["misaligned"] += float(np.sum((g - sgd_batch_gradient(dataset, other, w_star) + mu - true_grad) ** 2))
+        err["sgd"] += float(np.sum((g - true_grad) ** 2))
+    assert err["aligned"] < 0.05 * err["sgd"]            # alignment is what delivers the reduction
+    assert err["misaligned"] > err["sgd"]                # misalignment is worse than no control variate
+
+
+def test_naive_adam_fails_where_the_reference_engine_does_not() -> None:
+    from experiments.run_experiments import INVARIANT_FUZZ_VALUES, _naive_adam_steps
+
+    benign = [1.0, -1.0, 0.5]
+    assert _naive_adam_steps("naive", np.random.default_rng(0), 10, 0.9, 0.999, 0.01, benign)
+    failures = sum(
+        not _naive_adam_steps("naive", np.random.default_rng(t), 10, 0.9, 0.999, 0.1, INVARIANT_FUZZ_VALUES)
+        for t in range(40)
+    )
+    assert failures > 20                                   # the textbook update breaks on hostile inputs
+
+
 def test_least_squares_gap_matches_loss_difference() -> None:
     from experiments.run_experiments import LeastSquares
 
