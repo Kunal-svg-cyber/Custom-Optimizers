@@ -70,7 +70,7 @@ This holds for *any* adaptive normalisation as long as the update is clipped, so
 ### Proposition 4 (numerical safety, invariant 4)
 Let `G = 0.25 * sqrt(realmax)` for the working dtype. After sanitisation, every coordinate of `g_hat` lies in `[-G, G]` (NaN -> 0, ±Inf -> ±G). Then by induction `|m_t| <= G` and `0 <= v_t <= G^2` (convex combinations, start at 0), all finite. The denominator satisfies `denom >= floor > 0`, and the final ratio is clipped to `[-c, c]`, so no step can be NaN or Inf. In float32 the unclipped quotient `|m_t| / (denom * bias1) <= G / (floor * (1 - beta1))` is itself finite whenever `1 - beta1 >= 1e-4`, so the clip acts on a finite number rather than repairing an overflow. ∎
 
-The safeguard is a *clamp* on the denominator, not an additive `eps`. That is why a floor of `1e-15` is meaningful even in float32, where adding `1e-15` to a moderate number would do nothing.
+**Correction to an earlier version of this note:** it said the safeguard was a clamp rather than an additive `eps`, as if that distinction mattered. It does not: both prevent division by zero and both are irrelevant for moderate denominators. Experiment 14 shows that textbook Adam with an additive `eps` and a clamp-only variant fail identically under adversarial inputs (76% of trials with extreme but finite values, 100% with infinities or NaN), and that the full guard set fails in none. The operative guard is the sanitisation and bounding of the gradient, which keeps `g^2`, `m` and `v` finite; the denominator floor and ratio clip are secondary.
 
 ## 3. Cited results
 

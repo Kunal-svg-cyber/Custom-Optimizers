@@ -1,0 +1,50 @@
+# Claims and evidence
+
+Every substantive claim in this repository, the kind of support it has, where to check it, and its limits.
+**Kind** is one of: *proved* (short proof in `THEORY.md`), *cited* (known theorem, not re-proved), *tested*
+(a unit or property test), *measured* (an experiment in `results/experiments.json`, with its protocol), or
+*not claimed*. "Oracle" means the NumPy reference implementation that produced all experiment numbers.
+
+## Algorithm and engineering
+
+| # | Claim | Kind | Evidence | Limits |
+|---|---|---|---|---|
+| 1 | The variance-reduced gradient is unbiased for any snapshot | proved | Lemma 1; `test_lemma1_*` | none |
+| 2 | Its variance is at most `Lbar2/b * ||w - w~||^2`; for least squares it scales exactly with the squared displacement | proved, tested | Lemma 2; `test_lemma2_*`; Experiment 2 (25/25 probes within the bound) | the bound is loose in practice |
+| 3 | Variance of the engine's gradient is bounded in terms of the snapshot interval `K` | proved, measured | Proposition 3; Experiment 9 (held at every `K`, loose by 3 to 7 orders of magnitude) | cannot be used to pick `K` tightly |
+| 4 | The update cannot produce NaN or Inf and each coordinate moves at most `lr * update_clip` | proved, tested | Proposition 4; fuzz tests (oracle, torch, JAX); Experiment 14 | covers the update path; stored snapshot rows keep their inputs verbatim |
+| 5 | The gradient bound, not the denominator floor, is the operative numerical guard | measured | Experiment 14 (textbook Adam and clamp-only fail identically, full guards never) | adversarial float32 inputs, not typical training |
+| 6 | Batch alignment between the live and snapshot gradients is what delivers variance reduction | measured, tested | Experiment 14a (misaligned is 2.1x worse than plain SGD); `test_misaligned_*` | least squares |
+| 7 | PyTorch and JAX engines follow the same update rule as the oracle | tested | step-for-step differential tests; torch-vs-JAX parity; first CI run passed 44 of 45 tests on Python 3.10 (the one failure was a wrong assertion, since corrected) | frozen-preconditioner tests added later, not yet confirmed by CI; CPU only |
+| 8 | Parameters, snapshot and moments are contiguous in PyTorch | tested | `test_torch_flat_contiguity_*` | PyTorch engine only |
+
+## Theory
+
+| # | Claim | Kind | Evidence | Limits |
+|---|---|---|---|---|
+| 9 | SVRG with a frozen diagonal preconditioner converges linearly at a rate set by the preconditioned condition number | proved (corollary of a cited theorem), tested | Proposition 5; change-of-variables identity test; Experiment 11 (measured contraction 0.08 to 0.10 per epoch against a guaranteed 0.5) | frozen `D` only; not the adaptive engine; theorem is for random-iterate snapshots |
+| 10 | Jacobi scaling makes the condition number invariant to feature scales | proved, tested | Proposition 5 discussion; `test_jacobi_conditioning_*`; Experiment 10 | |
+| 11 | Convergence of the adaptive engine | **not claimed** | `THEORY.md` Section 4 | open; Adam-type methods can fail in general |
+| 12 | Convergence of non-convex or deep models | **not claimed** | | variance reduction is known to help less there |
+
+## Empirical findings (all on the oracle; synthetic unless stated)
+
+| # | Claim | Kind | Evidence | Limits |
+|---|---|---|---|---|
+| 13 | On well-scaled convex problems SVRG variants reach float64 round-off and beat the best tuned Adam / SGD-momentum (constant and cosine) | measured | Experiments 1, 4 (20/20 and 12/12 seeds); paired bootstrap | synthetic; magnitude of the difference is not meaningful at round-off |
+| 14 | Adaptive scaling helps when features are badly scaled and hurts on a larger well-scaled problem | measured | Experiments 5, 6, 12 | one problem family each; Experiment 5 has 3 seeds |
+| 15 | A method with theory-prescribed hyper-parameters (Jacobi SVRG, no tuning) beats the best tuned adaptive variant on badly scaled least squares | measured | Experiment 11 (20/20 seeds; 4.7x fewer evaluations) | needs the Hessian diagonal; one extra data pass not charged |
+| 16 | The Jacobi result carries to logistic regression with bad scaling | measured | Experiment 12 (12/12 seeds; tuned, not theory-prescribed) | synthetic; constant-rate Coordinate SVRG does not plateau there, so that effect is problem-dependent |
+| 17 | On three real datasets with raw features, preconditioned methods dominate unpreconditioned ones; Jacobi SVRG is best but only by 0.06 to 0.52 decades over the best tuned baseline | measured | Experiment 13 | three small non-financial datasets; seeds vary batch order only; no method reached the target; one baseline learning rate on the grid edge |
+| 18 | The round-off result does **not** carry to the real datasets | measured | Experiment 13 | |
+| 19 | Non-convex network: SVRG reaches a sharper stationary point but generalises worse | measured | Experiments 7, 8 | one small network; learning rates tuned on training loss |
+| 20 | No wall-clock win over a direct solve at `n = 40000`, `d = 200` | measured | Experiment 5 | NumPy on one CPU core; tuning cost excluded |
+| 21 | No benefit for walk-forward signal tracking | measured | Experiment 3 (differences at most 0.005 in IC; SVRG never beats Adam) | simulated alpha; small problem |
+
+## Explicitly not claimed
+
+* Performance on real financial data. No market data was used.
+* Any GPU or large-scale speed-up. The PyTorch engine has not been benchmarked on a GPU.
+* Superiority of Coordinate SVRG in general. On the problems tested, the simpler Jacobi SVRG beat it wherever the
+  Hessian diagonal was available; Coordinate SVRG's scaling is a gradient-only proxy.
+* Statistical significance beyond the paired bootstrap intervals reported; no multiple-comparison correction was applied.
