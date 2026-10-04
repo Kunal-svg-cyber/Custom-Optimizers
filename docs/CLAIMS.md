@@ -15,7 +15,7 @@ Every substantive claim in this repository, the kind of support it has, where to
 | 4 | The update cannot produce NaN or Inf and each coordinate moves at most `lr * update_clip` | proved, tested | Proposition 4; fuzz tests (oracle, torch, JAX); Experiment 14 | covers the update path; stored snapshot rows keep their inputs verbatim |
 | 5 | The gradient bound, not the denominator floor, is the operative numerical guard | measured | Experiment 14 (textbook Adam and clamp-only fail identically, full guards never) | adversarial float32 inputs, not typical training |
 | 6 | Batch alignment between the live and snapshot gradients is what delivers variance reduction | measured, tested | Experiment 14a (misaligned is 2.1x worse than plain SGD); `test_misaligned_*` | least squares |
-| 7 | PyTorch and JAX engines follow the same update rule as the oracle | tested | step-for-step differential tests; torch-vs-JAX parity; first CI run passed 44 of 45 tests on Python 3.10 (the one failure was a wrong assertion, since corrected) | frozen-preconditioner tests added later, not yet confirmed by CI; CPU only |
+| 7 | PyTorch and JAX engines follow the same update rule as the oracle | tested, measured | step-for-step differential tests; torch-vs-JAX parity; all 58 tests passed on a Colab T4 runtime; GPU engine within 1.8e-7 of the oracle over 100 steps; a 640-step GPU benchmark reproduced the oracle's final numbers to four digits | correctness, not speed; a fresh GitHub Actions run will confirm the newest tests on Python 3.10 and 3.12 |
 | 8 | Parameters, snapshot and moments are contiguous in PyTorch | tested | `test_torch_flat_contiguity_*` | PyTorch engine only |
 
 ## Theory
@@ -44,7 +44,7 @@ Every substantive claim in this repository, the kind of support it has, where to
 ## Explicitly not claimed
 
 * Performance on real financial data. No market data was used.
-* Any GPU or large-scale speed-up. The PyTorch engine has not been benchmarked on a GPU.
+* Any GPU or large-scale speed-up. The PyTorch engine has been validated for agreement with the oracle on a T4, but no timing study was done (a telemetry-enabled step took about 2 ms on a 32-parameter problem, dominated by host synchronisation).
 * Superiority of Coordinate SVRG in general. On the problems tested, the simpler Jacobi SVRG beat it wherever the
   Hessian diagonal was available; Coordinate SVRG's scaling is a gradient-only proxy.
 * Statistical significance beyond the paired bootstrap intervals reported; no multiple-comparison correction was applied.
