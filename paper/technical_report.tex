@@ -29,6 +29,7 @@ I implement a variance-reduced optimizer with adaptive coordinate scaling (``Coo
 I prove a variance bound that explains the method's behaviour, a staleness-controlled variant of it for the adaptive engine, a numerical-safety property, and a short corollary explaining when diagonal scaling helps.
 Against learning-rate-tuned Adam and SGD with momentum (constant and cosine-decay), variance reduction reaches float64 round-off on well-scaled convex problems; adaptive scaling helps only when features are badly scaled; and on a noisy non-convex fit the more precisely optimised model generalises \emph{worse}.
 The preconditioning corollary also yields a simpler method, Jacobi-preconditioned SVRG, whose hyper-parameters can be read off the theory with no tuning; on badly scaled least squares it reaches round-off on every seed, where the best tuned adaptive variant reaches $\ExpSixCosineGap$.
+Ablating the invariants shows that misaligned batches are worse than no variance reduction at all and that textbook Adam fails on adversarial inputs where the full guard set never does. On three real datasets with raw, unstandardised features, preconditioning still dominates, but the round-off result does not carry and the margin over tuned baselines shrinks to between $\ExpThirteenMinDiff$ and $\ExpThirteenMaxDiff$ decades.
 There is no wall-clock win over a direct solve at the sizes tested, and no benefit for walk-forward signal tracking.
 All data are synthetic, all models small, and the PyTorch and JAX engines did not produce the reported numbers; the report states these limits explicitly.
 \end{abstract}
@@ -40,7 +41,7 @@ Stochastic gradient methods stall on noisy finite-sum objectives because per-sam
 \begin{enumerate}[leftmargin=*,itemsep=2pt]
 \item A reference implementation in PyTorch and JAX with four enforced invariants (Section~\ref{sec:method}), tested step-for-step against an independent NumPy oracle, with adversarial-input fuzz tests.
 \item Four short results (Section~\ref{sec:theory}): a variance bound (Lemma~\ref{lem:var}), a staleness-controlled version valid for the adaptive engine (Proposition~\ref{prop:stale}), a numerical-safety property (Proposition~\ref{prop:safe}), and a preconditioning corollary (Proposition~\ref{prop:precond}) that predicts when adaptive scaling helps.
-\item A learning-rate-tuned ablation with held-out seeds and paired bootstrap intervals across twelve experiments, including negative and null results.
+\item A learning-rate-tuned ablation with held-out seeds and paired bootstrap intervals across fourteen experiments, including negative and null results.
 \item The frozen-preconditioner mode is implemented in both engines (\texttt{set\_frozen\_preconditioner} in PyTorch, a \texttt{preconditioner} argument in JAX), with differential tests against the oracle.
 \item A falsifiable prediction from the theory, tested: a method with theory-prescribed hyper-parameters (Section~\ref{sec:jacobi}) that outperforms the more elaborate adaptive engine on badly scaled problems. The engine's own scaling is best read as a gradient-only proxy for it.
 \end{enumerate}
@@ -56,7 +57,7 @@ The engine then applies coordinate-wise momentum and second-moment tracking,
 m\leftarrow\beta_1 m+(1-\beta_1)\ghat,\quad v\leftarrow\beta_2 v+(1-\beta_2)\ghat^{2},\quad
 w\leftarrow w-\eta\,\mathrm{clip}\!\Big(\frac{m/(1-\beta_1^t)}{\max\{\sqrt{v/(1-\beta_2^t)},\,\varepsilon_{\rm floor}\}},\,\pm c\Big).
 \]
-Four invariants are enforced and tested: (1)~the variance of $\ghat$ vanishes as $w\to\tilde w$; (2)~$g_B(w)$ and $g_B(\tilde w)$ use the \emph{same} batch (one batch identifier is passed to both evaluations); (3)~in PyTorch, parameters, snapshot, $\mu$, $m$, $v$ live in contiguous flat buffers; (4)~gradients are sanitised and bounded and the denominator is \emph{clamped}, not offset, so no division can produce NaN or Inf.
+Four invariants are enforced and tested: (1)~the variance of $\ghat$ vanishes as $w\to\tilde w$; (2)~$g_B(w)$ and $g_B(\tilde w)$ use the \emph{same} batch (one batch identifier is passed to both evaluations); (3)~in PyTorch, parameters, snapshot, $\mu$, $m$, $v$ live in contiguous flat buffers; (4)~gradients are sanitised and bounded, the denominator is floored and the ratio clipped, so no division can produce NaN or Inf; Section~\ref{sec:invariants} shows that the gradient bound is the operative guard.
 
 \section{Theory}\label{sec:theory}
 Let each $f_i$ have $L_i$-Lipschitz gradient and write $\bar L^2=\frac1n\sum_iL_i^2$.
@@ -169,8 +170,21 @@ The comparison favours Jacobi-SVRG in one respect that should be stated: it uses
 \caption{Jacobi-preconditioned SVRG (theory-prescribed and tuned) against the best tuned baselines.}
 \end{figure}
 
+\subsection{Real data with raw features}\label{sec:real}
+To check that the findings are not artefacts of the simulator, I ran the same protocol on three bundled real datasets with raw, unstandardised features plus an intercept (Table~\ref{tab:real}): breast-cancer diagnosis and wine (logistic regression) and diabetes progression (least squares). Their feature scales span \ExpThirteenBCDecades{} decades (breast cancer) down to 1.8 decades, and Jacobi scaling reduces the condition number of the Hessian at the optimum by two to three orders of magnitude (breast cancer: $\ExpThirteenBCCondRaw\to\ExpThirteenBCCondJacobi$).
+Two results carry over and one does not. Preconditioned methods (Jacobi SVRG, Coordinate SVRG, Adam) beat the unpreconditioned ones (SGD, SVRG with momentum) by large margins on all three. Jacobi SVRG is the best method on all three, but by a small margin over the best tuned baseline, between \ExpThirteenMinDiff{} and \ExpThirteenMaxDiff{} decades (all ten optimizer seeds each), and on breast cancer it is indistinguishable from Coordinate SVRG with cosine decay. What does \emph{not} carry over is the round-off result: no method reached the $10^{-8}$ target within 1000 epochs on any dataset, because $\kappa$ remains large even after Jacobi scaling and the datasets are tiny. Three datasets cannot support a general claim, the seeds vary only the batch order (so the intervals say nothing about variation across datasets), and one baseline learning rate (diabetes, Adam with cosine decay) sat on the edge of its grid.
+
 \subsection{Walk-forward signal tracking: no benefit}
 In a rolling re-estimation of a drifting alpha under a compute budget, every method's out-of-sample correlation with the clean signal differs from closed-form OLS by at most \ExpThreeMaxICDiff, against a spread across datasets of about \ExpThreeIQR; paired intervals often exclude zero but the effects are negligible, and SVRG never beats Adam. The problem is too small for the choice of optimizer to matter.
+
+\section{Ablating the invariants}\label{sec:invariants}
+\paragraph{Sample alignment (invariant 2).} Taking the snapshot gradient on an \emph{independent} batch instead of the same one destroys the control variate (Figure~\ref{fig:align}). At snapshot distance $0.01$ the estimator's mean squared error is $\ExpFourteenAligned$ with aligned batches, $\ExpFourteenMisaligned$ with misaligned batches, and $\ExpFourteenSgd$ for plain mini-batch SGD: misaligned SVRG is $\ExpFourteenRatio\times$ \emph{worse than not using variance reduction}, and its error does not shrink with distance.
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.55\linewidth]{alignment_violation.png}
+\caption{Gradient-estimator error against snapshot distance, with aligned and misaligned batches.}\label{fig:align}
+\end{figure}
+\paragraph{Coordinate safeguards (invariant 4).} In \ExpFourteenTrials{} adversarial float32 trials (10 steps, momentum and decay up to $0.9999$, gradients drawn from zeros, denormals and values up to $3\times10^{38}$, and in a second tier also infinities and NaN), textbook Adam with an additive $\varepsilon$ produced non-finite weights in \ExpFourteenNaiveFinite\% of trials with extreme but finite inputs and \ExpFourteenNaiveInf\% with infinities or NaN; a clamp-only variant failed identically (\ExpFourteenClampFinite\%); the full guard set failed in \ExpFourteenFullFinite\%. The operative guard is therefore the sanitising and bounding of the gradient; the denominator floor alone adds nothing in this test. (An earlier version of this work claimed that clamping rather than offsetting the denominator mattered; this experiment shows it does not.) The inputs are deliberately hostile and describe a robustness guarantee, not typical training.
 
 \section{Limitations and threats to validity}
 \begin{itemize}[leftmargin=*,itemsep=2pt]
@@ -180,6 +194,7 @@ In a rolling re-estimation of a drifting alpha under a compute budget, every met
 \item \textbf{Engines versus experiments.} The PyTorch and JAX engines are validated by tests written against the oracle and run in continuous integration on CPU, including step-for-step agreement with it; the reported numbers, however, come from the NumPy oracle, and no GPU benchmark has been run.
 \item \textbf{No convergence proof for the adaptive engine}; the cosine-decay results are empirical.
 \item \textbf{Statistics.} Seed counts range from 3 to 20; intervals are bootstrap intervals over seeds; no multiple-comparison correction; learning rates are tuned on training loss in the non-convex and logistic held-out checks.
+\item \textbf{Real data is limited to three small bundled datasets} with non-financial targets; no market data was used, and the round-off results on synthetic data do not reproduce on them.
 \item \textbf{Tuning cost} is excluded from the iterative wall-clock times.
 \item \textbf{Jacobi-SVRG scope.} It is tested on least squares (theory-prescribed and tuned) and on logistic regression (tuned only), always with badly scaled or well-scaled linear features; (available for linear and generalised-linear models, not in general), and its single-sample theory variant is slow per evaluation in wall-clock terms; the evaluation counts above do not charge the one extra pass that computes $D$.
 \end{itemize}

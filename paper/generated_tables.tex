@@ -18,6 +18,22 @@ badly scaled & Jacobi SVRG, tuned lr & $1.8\times 10^{-29}$ & 49\,152 \\
 \begin{table}[h]
 \centering
 \small
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Dataset & decades & cond$(H)$ raw $\to$ Jacobi & best baseline & Coordinate SVRG (cos) & Jacobi SVRG \\
+\midrule
+breast cancer & 5.3 & $3.1\times 10^{7}\to 2.5\times 10^{5}$ & $6.9\times 10^{-3}$ & $6.0\times 10^{-3}$ & $6.0\times 10^{-3}$ \\
+wine & 3.4 & $1.1\times 10^{7}\to 4.0\times 10^{3}$ & $5.7\times 10^{-3}$ & $8.5\times 10^{-3}$ & $1.7\times 10^{-3}$ \\
+diabetes & 1.8 & $5.2\times 10^{7}\to 4.0\times 10^{4}$ & $2.4\times 10^{1}$ & $4.9\times 10^{1}$ & $1.8\times 10^{1}$ \\
+\bottomrule
+\end{tabular}
+\caption{Real datasets with raw, unstandardised features (plus an intercept): median final loss gap after 1000 epochs of sample-gradient evaluations, learning rates tuned per method. No method reached the $10^{-8}$ target on any dataset.}
+\label{tab:real}
+\end{table}
+
+\begin{table}[h]
+\centering
+\small
 \begin{tabular}{@{}lrrr@{}}
 \toprule
 Method & tuned lr & median final gap & evals to target \\

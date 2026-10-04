@@ -191,6 +191,40 @@ def main() -> None:
     macros["ExpTwelveAdaptiveVsMomentum"] = signed(d12b["med"], 1)
     macros["ExpTwelveSeeds"] = str(d12["n"])
 
+    # ---- Experiment 13 (real data) ----
+    real = r["real"]["tasks"]
+    real_rows = []
+    for tname, tb in real.items():
+        v = tb["regimes"]["real"]["variants"]
+        bbase = best_baseline(v)
+        dj = log_diff(v, "svrg_jacobi", bbase)
+        real_rows.append((tname, tb, bbase, dj, v))
+    macros["ExpThirteenMinDiff"] = f"{min(abs(x[3]['med']) for x in real_rows):.2f}"
+    macros["ExpThirteenMaxDiff"] = f"{max(abs(x[3]['med']) for x in real_rows):.2f}"
+    macros["ExpThirteenBCDecades"] = f"{real['breast_cancer']['feature_scale_decades']:.1f}"
+    macros["ExpThirteenBCCondRaw"] = sci(real["breast_cancer"]["conditioning"]["cond_raw"])
+    macros["ExpThirteenBCCondJacobi"] = sci(real["breast_cancer"]["conditioning"]["cond_jacobi"])
+    macros["ExpThirteenBCGap"] = sci(real["breast_cancer"]["regimes"]["real"]["variants"]["svrg_jacobi"]["final_gap_median"])
+    macros["ExpThirteenWineGap"] = sci(real["wine"]["regimes"]["real"]["variants"]["svrg_jacobi"]["final_gap_median"])
+    macros["ExpThirteenWineBaseline"] = sci(real["wine"]["regimes"]["real"]["variants"][best_baseline(real["wine"]["regimes"]["real"]["variants"])]["final_gap_median"])
+    macros["ExpThirteenAnyReached"] = "no" if all(
+        math.isinf(x["evals_to_target_median"]) for tb in real.values() for x in tb["regimes"]["real"]["variants"].values()
+    ) else "yes"
+
+    # ---- Experiment 14 (invariant violations) ----
+    iv = r["invariants"]
+    row = [x for x in iv["alignment"] if abs(x["delta"] - 0.01) < 1e-12][0]
+    macros["ExpFourteenAligned"] = sci(row["aligned"])
+    macros["ExpFourteenMisaligned"] = f"{row['misaligned']:.1f}"
+    macros["ExpFourteenSgd"] = f"{row['sgd']:.1f}"
+    macros["ExpFourteenRatio"] = f"{row['misaligned'] / row['sgd']:.1f}"
+    tiers = list(iv["failure_rates"])
+    macros["ExpFourteenNaiveFinite"] = f"{100 * iv['failure_rates'][tiers[0]]['naive']:.0f}"
+    macros["ExpFourteenClampFinite"] = f"{100 * iv['failure_rates'][tiers[0]]['clamp_only']:.0f}"
+    macros["ExpFourteenFullFinite"] = f"{100 * iv['failure_rates'][tiers[0]]['full']:.0f}"
+    macros["ExpFourteenNaiveInf"] = f"{100 * iv['failure_rates'][tiers[1]]['naive']:.0f}"
+    macros["ExpFourteenTrials"] = f"{iv['trials']:,}".replace(",", "{,}")
+
     # ---- Experiment 3 (walk-forward) ----
     wf = r["walk_forward"]["by_budget"]
     diffs: List[float] = []
@@ -232,8 +266,18 @@ def main() -> None:
     jt += [r"\bottomrule", r"\end{tabular}",
            r"\caption{Jacobi-preconditioned SVRG on the datasets and seeds of Tables~\ref{tab:ls} and~\ref{tab:hetero}. The theory-prescribed row uses no tuning at all.}",
            r"\label{tab:jacobi}", r"\end{table}"]
+    rt = [r"\begin{table}[h]", r"\centering", r"\small", r"\begin{tabular}{@{}lrrrrr@{}}", r"\toprule",
+          r"Dataset & decades & cond$(H)$ raw $\to$ Jacobi & best baseline & Coordinate SVRG (cos) & Jacobi SVRG \\", r"\midrule"]
+    for tname, tb, bbase, dj, v in real_rows:
+        rt.append(
+            rf"{tname.replace('_', ' ')} & {tb['feature_scale_decades']:.1f} & ${sci(tb['conditioning']['cond_raw'])}\to {sci(tb['conditioning']['cond_jacobi'])}$ & "
+            rf"${sci(v[bbase]['final_gap_median'])}$ & ${sci(v['svrg_adam_cosine']['final_gap_median'])}$ & ${sci(v['svrg_jacobi']['final_gap_median'])}$ \\")
+    rt += [r"\bottomrule", r"\end{tabular}",
+           r"\caption{Real datasets with raw, unstandardised features (plus an intercept): median final loss gap after 1000 epochs of sample-gradient evaluations, learning rates tuned per method. No method reached the $10^{-8}$ target on any dataset.}",
+           r"\label{tab:real}", r"\end{table}"]
     tables = [
         "\n".join(jt),
+        "\n".join(rt),
         table("ablation", "volatile",
               r"Least squares, volatile regime. Median final loss gap and sample-gradient evaluations to reach $10^{-8}$ of the initial gap, held-out seeds. $\dagger$: best learning rate on the edge of the grid.",
               "tab:ls"),
