@@ -244,6 +244,74 @@ Jacobi-preconditioned SVRG on least squares, volatile regime; datasets and seeds
 | badly scaled features (3 decades) | Jacobi SVRG, theory-prescribed (no tuning) | 2.62e-29 | 73,848 | 83 | 0.50 | 0.077 (0.863) |
 | badly scaled features (3 decades) | Jacobi SVRG, tuned lr 5.62e-02 | 1.78e-29 | 49,152 | | | |
 
+### Experiment 14: what breaks when an invariant is violated
+
+**(a) Sample alignment (invariant 2).** Mean squared error of the gradient estimate on least squares, batch 64, 400 probes per row, snapshot at the optimum and the current point displaced by `delta`. 'Misaligned' takes the snapshot gradient on an independent batch.
+
+| delta | aligned (ours) | misaligned | plain mini-batch SGD |
+|---|---|---|---|
+| 0 | 0.00e+00 | 3.19e+00 | 1.53e+00 |
+| 0.01 | 5.09e-05 | 3.35e+00 | 1.59e+00 |
+| 0.03 | 4.64e-04 | 3.19e+00 | 1.55e+00 |
+| 0.1 | 5.21e-03 | 3.38e+00 | 1.65e+00 |
+| 0.3 | 4.64e-02 | 3.40e+00 | 1.73e+00 |
+| 1 | 5.18e-01 | 3.90e+00 | 2.24e+00 |
+
+**(b) Coordinate safeguards (invariant 4).** Share of 2000 adversarial float32 trials (10 steps, momentum and decay up to 0.9999, gradients drawn from zeros, denormals, 1e-38, 1e30 and 3e38, and in the second tier also infinities and NaN) in which the weights became non-finite. These inputs are deliberately hostile; the rates describe that input distribution, not typical training.
+
+| Update rule | extreme but finite inputs | inputs including inf and NaN |
+|---|---|---|
+| textbook Adam (additive eps) | 76.0% | 100.0% |
+| denominator clamp only | 76.0% | 100.0% |
+| full guard set (this repo) | 0.0% | 0.0% |
+
+### Experiment 13 (real data): breast_cancer
+
+Breast Cancer Wisconsin (diagnostic), logistic regression; n=569, d=31 (incl. intercept), raw features spanning 5.3 decades of scale; batch 32, snapshot every 35 steps; Jacobi SVRG added. Budget: 1000 epochs of sample-gradient evaluations. cond(H) at the optimum falls from 3.09e+07 to 2.54e+05 under Jacobi scaling (1.2e+02x). Median [IQR] over 10 optimizer seeds (the data are fixed); the target is 1e-08 x the initial gap.
+
+| Method | tuned lr | final gap, median [IQR] | evals to target |
+|---|---|---|---|
+| SGD + momentum | 1.00e-04 | 1.17e-01 [8.94e-02, 1.31e-01] | not reached |
+| SGD + momentum, cosine lr | 1.00e-04 | 7.74e-02 [7.73e-02, 7.74e-02] | not reached |
+| Adam (clamped) | 4.22e-04 | 1.80e-02 [1.57e-02, 2.08e-02] | not reached |
+| Adam (clamped), cosine lr | 7.50e-03 | 6.87e-03 [6.78e-03, 6.95e-03] | not reached |
+| SVRG + momentum | 1.00e-04 | 8.00e-02 [8.00e-02, 8.01e-02] | not reached |
+| Coordinate SVRG (ours) | 1.78e-03 | 6.54e-03 [6.44e-03, 6.65e-03] | not reached |
+| Coordinate SVRG, cosine lr (ours) | 3.16e-02 | 6.01e-03 [5.62e-03, 6.66e-03] | not reached |
+| Jacobi SVRG, tuned lr | 5.62e-01 | 6.01e-03 [5.99e-03, 6.04e-03] | not reached |
+
+### Experiment 13 (real data): wine
+
+Wine (class 0 vs rest), logistic regression; n=178, d=14 (incl. intercept), raw features spanning 3.4 decades of scale; batch 16, snapshot every 22 steps; Jacobi SVRG added. Budget: 1000 epochs of sample-gradient evaluations. cond(H) at the optimum falls from 1.07e+07 to 4.04e+03 under Jacobi scaling (2.7e+03x). Median [IQR] over 10 optimizer seeds (the data are fixed); the target is 1e-08 x the initial gap.
+
+| Method | tuned lr | final gap, median [IQR] | evals to target |
+|---|---|---|---|
+| SGD + momentum | 1.00e-04 | 9.10e-02 [8.76e-02, 9.94e-02] | not reached |
+| SGD + momentum, cosine lr | 4.22e-04 | 7.51e-02 [7.42e-02, 7.60e-02] | not reached |
+| Adam (clamped) | 1.78e-03 | 2.77e-02 [1.48e-02, 4.34e-02] | not reached |
+| Adam (clamped), cosine lr | 7.50e-03 | 5.67e-03 [5.60e-03, 5.72e-03] | not reached |
+| SVRG + momentum | 1.00e-04 | 1.13e-01 [1.13e-01, 1.13e-01] | not reached |
+| Coordinate SVRG (ours) | 7.50e-03 | 5.66e-03 [3.32e-03, 1.67e-02] | not reached |
+| Coordinate SVRG, cosine lr (ours) | 3.16e-02 | 8.48e-03 [5.05e-03, 8.75e-03] | not reached |
+| Jacobi SVRG, tuned lr | 5.62e-01 | 1.70e-03 [1.70e-03, 1.71e-03] | not reached |
+
+### Experiment 13 (real data): diabetes
+
+Diabetes (raw, unscaled features), least squares; n=442, d=11 (incl. intercept), raw features spanning 1.8 decades of scale; batch 32, snapshot every 27 steps; Jacobi SVRG added. Budget: 1000 epochs of sample-gradient evaluations. cond(H) at the optimum falls from 5.24e+07 to 4.01e+04 under Jacobi scaling (1.3e+03x). Median [IQR] over 10 optimizer seeds (the data are fixed); the target is 1e-08 x the initial gap.
+
+| Method | tuned lr | final gap, median [IQR] | evals to target |
+|---|---|---|---|
+| SGD + momentum | 5.62e-06 | 1.83e+02 [1.82e+02, 1.93e+02] | not reached |
+| SGD + momentum, cosine lr | 1.00e-04 | 1.38e+02 [1.38e+02, 1.38e+02] | not reached |
+| Adam (clamped) | 7.50e-03 | 9.41e+01 [8.95e+01, 9.90e+01] | not reached |
+| Adam (clamped), cosine lr | 1.00e+01 † | 2.42e+01 [2.38e+01, 2.43e+01] | not reached |
+| SVRG + momentum | 1.00e-04 | 1.42e+02 [1.42e+02, 1.42e+02] | not reached |
+| Coordinate SVRG (ours) | 2.37e+00 | 7.04e+01 [4.30e+01, 3.92e+02] | not reached |
+| Coordinate SVRG, cosine lr (ours) | 5.62e-01 | 4.86e+01 [4.82e+01, 4.89e+01] | not reached |
+| Jacobi SVRG, tuned lr | 1.33e-01 | 1.80e+01 [1.80e+01, 1.80e+01] | not reached |
+
+† best learning rate sat on the edge of the sweep grid.
+
 ### Experiment 10: predicted benefit of diagonal preconditioning (Proposition 5)
 
 Median over 5 datasets. `kappa = L / gamma` with `L = max_i ||x_i||^2` and `gamma = lambda_min(X^T X / n)`; the Jacobi-preconditioned constants use `D = diag(X^T X / n)`. Proposition 5 gives SVRG's linear rate in terms of this `kappa`.
@@ -317,6 +385,18 @@ Difference in `log10(final gap)`: **negative means the first method is better**.
 | Exp 12 scaled logistic / volatile | Jacobi SVRG, tuned lr vs Adam (clamped), cosine lr | -23.99 | [-25.53, -21.72] | 12/12 |
 | Exp 12 scaled logistic / volatile | Jacobi SVRG, tuned lr vs Coordinate SVRG (ours) | -17.21 | [-18.40, -14.17] | 12/12 |
 | Exp 12 scaled logistic / volatile | Jacobi SVRG, tuned lr vs Coordinate SVRG, cosine lr (ours) | -12.46 | [-14.19, -9.35] | 12/12 |
+| Exp 13 real / breast_cancer | Jacobi SVRG, tuned lr vs Adam (clamped), cosine lr | -0.06 | [-0.06, -0.05] | 10/10 |
+| Exp 13 real / breast_cancer | Jacobi SVRG, tuned lr vs Coordinate SVRG, cosine lr (ours) | +0.00 | [-0.05, +0.04] | 5/10 |
+| Exp 13 real / breast_cancer | Coordinate SVRG, cosine lr (ours) vs Adam (clamped), cosine lr | -0.05 | [-0.10, -0.01] | 8/10 |
+| Exp 13 real / breast_cancer | Coordinate SVRG (ours) vs SVRG + momentum | -1.09 | [-1.10, -1.08] | 10/10 |
+| Exp 13 real / wine | Jacobi SVRG, tuned lr vs Adam (clamped), cosine lr | -0.52 | [-0.53, -0.51] | 10/10 |
+| Exp 13 real / wine | Jacobi SVRG, tuned lr vs Coordinate SVRG, cosine lr (ours) | -0.70 | [-0.72, -0.46] | 10/10 |
+| Exp 13 real / wine | Coordinate SVRG, cosine lr (ours) vs Adam (clamped), cosine lr | +0.18 | [-0.06, +0.20] | 4/10 |
+| Exp 13 real / wine | Coordinate SVRG (ours) vs SVRG + momentum | -1.33 | [-1.55, -0.81] | 10/10 |
+| Exp 13 real / diabetes | Jacobi SVRG, tuned lr vs Adam (clamped), cosine lr | -0.13 | [-0.13, -0.12] | 10/10 |
+| Exp 13 real / diabetes | Jacobi SVRG, tuned lr vs Coordinate SVRG, cosine lr (ours) | -0.43 | [-0.43, -0.43] | 10/10 |
+| Exp 13 real / diabetes | Coordinate SVRG, cosine lr (ours) vs Adam (clamped), cosine lr | +0.30 | [+0.30, +0.31] | 0/10 |
+| Exp 13 real / diabetes | Coordinate SVRG (ours) vs SVRG + momentum | -0.33 | [-0.52, +0.53] | 7/10 |
 | Exp 11 well-scaled features | Jacobi SVRG (theory) vs SGD + momentum, cosine lr | -22.22 | [-22.35, -22.09] | 20/20 |
 | Exp 11 well-scaled features | Jacobi SVRG (theory) vs Coordinate SVRG, cosine lr (ours) | +1.16 | [+1.04, +1.32] | 0/20 |
 | Exp 11 well-scaled features | Jacobi SVRG (theory) vs Coordinate SVRG (ours) | +1.15 | [+1.03, +1.31] | 0/20 |
