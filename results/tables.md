@@ -138,6 +138,25 @@ Non-convex: one-hidden-layer tanh network (16-16-1, 289 parameters), n=4096, bat
 
 † best learning rate sat on the edge of the sweep grid (the true optimum may lie outside it).
 
+### Experiment 12: logistic regression with badly scaled features (Jacobi SVRG added)
+
+Logistic regression on sign(return) with column scales over 3 decades, L2=0.01, n=20000, d=64, batch 64, snapshot every 64 steps; Jacobi SVRG added with D = 0.25 mean(x^2) + L2. Budget: 40 epochs of sample-gradient evaluations. Final loss gap `f(w) - f(w*)`, median [IQR] over held-out evaluation seeds; 'evals to target' = sample-gradient evaluations to reach 1e-08 x the initial gap.
+
+**volatile** (noise sigma = 1.0)
+
+| Method | tuned lr | final gap, median [IQR] | evals to target |
+|---|---|---|---|
+| SGD + momentum | 1.33e-04 | 2.23e-03 [1.84e-03, 3.31e-03] | not reached |
+| SGD + momentum, cosine lr | 2.37e-02 | 4.76e-05 [3.44e-05, 6.08e-05] | not reached |
+| Adam (clamped) | 1.33e-04 | 1.88e-04 [1.69e-04, 2.67e-04] | not reached |
+| Adam (clamped), cosine lr | 4.87e-04 | 8.69e-07 [7.42e-07, 9.98e-07] | not reached |
+| SVRG + momentum | 2.37e-02 | 1.59e-04 [1.19e-04, 2.52e-04] | not reached |
+| Coordinate SVRG (ours) | 4.87e-04 | 7.17e-14 [1.31e-15, 6.82e-12] | 499,392 |
+| Coordinate SVRG, cosine lr (ours) | 1.78e-03 | 7.43e-19 [5.76e-20, 6.40e-17] | 485,296 |
+| Jacobi SVRG, tuned lr | 8.66e-02 | 9.68e-30 [2.46e-32, 1.26e-28] | 169,152 |
+
+† best learning rate sat on the edge of the sweep grid (the true optimum may lie outside it).
+
 ### Experiment 2: variance along the trajectory
 
 Probes taken at maximum snapshot staleness (every 64 steps). Measured variance fell within the Lemma 2 bound in 100% of probes and within the Proposition 3 bound in 100%.
@@ -291,6 +310,13 @@ Difference in `log10(final gap)`: **negative means the first method is better**.
 | Exp 7 non-convex / volatile | Coordinate SVRG (ours) vs Adam (clamped), cosine lr | +1.55 | [+0.90, +1.88] | 0/8 |
 | Exp 7 non-convex / volatile | SVRG + momentum vs Adam (clamped), cosine lr | +0.36 | [-0.03, +0.62] | 2/8 |
 | Exp 7 non-convex / volatile | Coordinate SVRG (ours) vs SVRG + momentum | +1.19 | [+0.87, +1.36] | 0/8 |
+| Exp 12 scaled logistic / volatile | Coordinate SVRG, cosine lr (ours) vs Adam (clamped), cosine lr | -12.17 | [-13.09, -10.08] | 12/12 |
+| Exp 12 scaled logistic / volatile | Coordinate SVRG (ours) vs Adam (clamped), cosine lr | -7.19 | [-9.00, -5.09] | 12/12 |
+| Exp 12 scaled logistic / volatile | SVRG + momentum vs Adam (clamped), cosine lr | +2.27 | [+2.12, +2.56] | 0/12 |
+| Exp 12 scaled logistic / volatile | Coordinate SVRG (ours) vs SVRG + momentum | -9.33 | [-11.49, -7.56] | 12/12 |
+| Exp 12 scaled logistic / volatile | Jacobi SVRG, tuned lr vs Adam (clamped), cosine lr | -23.99 | [-25.53, -21.72] | 12/12 |
+| Exp 12 scaled logistic / volatile | Jacobi SVRG, tuned lr vs Coordinate SVRG (ours) | -17.21 | [-18.40, -14.17] | 12/12 |
+| Exp 12 scaled logistic / volatile | Jacobi SVRG, tuned lr vs Coordinate SVRG, cosine lr (ours) | -12.46 | [-14.19, -9.35] | 12/12 |
 | Exp 11 well-scaled features | Jacobi SVRG (theory) vs SGD + momentum, cosine lr | -22.22 | [-22.35, -22.09] | 20/20 |
 | Exp 11 well-scaled features | Jacobi SVRG (theory) vs Coordinate SVRG, cosine lr (ours) | +1.16 | [+1.04, +1.32] | 0/20 |
 | Exp 11 well-scaled features | Jacobi SVRG (theory) vs Coordinate SVRG (ours) | +1.15 | [+1.03, +1.31] | 0/20 |
