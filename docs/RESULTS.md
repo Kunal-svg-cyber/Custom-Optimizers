@@ -1,6 +1,6 @@
 # Results
 
-All numbers are produced by `python -m experiments.run_experiments` (about 17 minutes on one CPU core, NumPy only)
+All numbers are produced by `python -m experiments.run_experiments` (about 20 minutes on one CPU core, NumPy only)
 and stored in `results/experiments.json`. They use the NumPy reference implementation (`src/reference_numpy.py`),
 which the PyTorch and JAX engines are tested against step for step.
 **The PyTorch/JAX engines did not produce these numbers.** Figures are in `docs/figures/`.
@@ -11,7 +11,7 @@ gradients and every full-gradient snapshot pass. Baselines include a cosine-deca
 constant-step baseline is a weak comparison for a method whose selling point is convergence at a constant step.
 Cosine-decay runs are tied to the budget (the rate reaches zero exactly at the end), so their mid-run curves are not
 comparable with constant-rate curves; compare final values. Seeds: Exp 1 and 6 use 2 tuning / 20 evaluation seeds, Exp 4
-uses 1 / 12, Exp 5 uses 1 / 3, Exp 7 uses 2 / 8, Exp 3 uses 20, Exp 8 uses 8 fresh datasets, Exp 9 uses 2 / 6, Exp 10 uses 5 datasets, Exp 11 uses 2 / 20 (same datasets as Exp 1 and 6).
+uses 1 / 12, Exp 5 uses 1 / 3, Exp 7 uses 2 / 8, Exp 3 uses 20, Exp 8 uses 8 fresh datasets, Exp 9 uses 2 / 6, Exp 10 uses 5 datasets, Exp 11 uses 2 / 20 (same datasets as Exp 1 and 6), Exp 12 uses 1 / 12.
 
 ![least squares](figures/ablation_curves.png)
 *(Curves bottom out at 1e-18 only because the plot clamps there; the underlying gaps are about 1e-31, i.e. float64 round-off.)*
@@ -25,6 +25,8 @@ uses 1 / 12, Exp 5 uses 1 / 3, Exp 7 uses 2 / 8, Exp 3 uses 20, Exp 8 uses 8 fre
 ![non-convex](figures/nonconvex_curves.png)
 
 ![Jacobi SVRG](figures/jacobi_curves.png)
+
+![scaled logistic](figures/logscaled_curves.png)
 
 ![snapshot interval](figures/snapshot_interval.png)
 
@@ -169,6 +171,25 @@ Non-convex: one-hidden-layer tanh network (16-16-1, 289 parameters), n=4096, bat
 | SVRG + momentum | 3.16e-01 † | 7.67e-06 [6.73e-06, 8.34e-06] | not reached | 0.1202 |
 | Coordinate SVRG (ours) | 6.49e-03 | 9.35e-05 [5.89e-05, 1.89e-04] | not reached | 0.1092 |
 | Coordinate SVRG, cosine lr (ours) | 8.66e-02 | 2.16e-07 [1.70e-07, 2.42e-07] | not reached | 0.1085 |
+
+† best learning rate sat on the edge of the sweep grid (the true optimum may lie outside it).
+
+### Experiment 12: logistic regression with badly scaled features (Jacobi SVRG added)
+
+Logistic regression on sign(return) with column scales over 3 decades, L2=0.01, n=20000, d=64, batch 64, snapshot every 64 steps; Jacobi SVRG added with D = 0.25 mean(x^2) + L2. Budget: 40 epochs of sample-gradient evaluations. Final loss gap `f(w) - f(w*)`, median [IQR] over held-out evaluation seeds; 'evals to target' = sample-gradient evaluations to reach 1e-08 x the initial gap.
+
+**volatile** (noise sigma = 1.0)
+
+| Method | tuned lr | final gap, median [IQR] | evals to target |
+|---|---|---|---|
+| SGD + momentum | 1.33e-04 | 2.23e-03 [1.84e-03, 3.31e-03] | not reached |
+| SGD + momentum, cosine lr | 2.37e-02 | 4.76e-05 [3.44e-05, 6.08e-05] | not reached |
+| Adam (clamped) | 1.33e-04 | 1.88e-04 [1.69e-04, 2.67e-04] | not reached |
+| Adam (clamped), cosine lr | 4.87e-04 | 8.69e-07 [7.42e-07, 9.98e-07] | not reached |
+| SVRG + momentum | 2.37e-02 | 1.59e-04 [1.19e-04, 2.52e-04] | not reached |
+| Coordinate SVRG (ours) | 4.87e-04 | 7.17e-14 [1.31e-15, 6.82e-12] | 499,392 |
+| Coordinate SVRG, cosine lr (ours) | 1.78e-03 | 7.43e-19 [5.76e-20, 6.40e-17] | 485,296 |
+| Jacobi SVRG, tuned lr | 8.66e-02 | 9.68e-30 [2.46e-32, 1.26e-28] | 169,152 |
 
 † best learning rate sat on the edge of the sweep grid (the true optimum may lie outside it).
 
@@ -325,6 +346,13 @@ Difference in `log10(final gap)`: **negative means the first method is better**.
 | Exp 7 non-convex / volatile | Coordinate SVRG (ours) vs Adam (clamped), cosine lr | +1.55 | [+0.90, +1.88] | 0/8 |
 | Exp 7 non-convex / volatile | SVRG + momentum vs Adam (clamped), cosine lr | +0.36 | [-0.03, +0.62] | 2/8 |
 | Exp 7 non-convex / volatile | Coordinate SVRG (ours) vs SVRG + momentum | +1.19 | [+0.87, +1.36] | 0/8 |
+| Exp 12 scaled logistic / volatile | Coordinate SVRG, cosine lr (ours) vs Adam (clamped), cosine lr | -12.17 | [-13.09, -10.08] | 12/12 |
+| Exp 12 scaled logistic / volatile | Coordinate SVRG (ours) vs Adam (clamped), cosine lr | -7.19 | [-9.00, -5.09] | 12/12 |
+| Exp 12 scaled logistic / volatile | SVRG + momentum vs Adam (clamped), cosine lr | +2.27 | [+2.12, +2.56] | 0/12 |
+| Exp 12 scaled logistic / volatile | Coordinate SVRG (ours) vs SVRG + momentum | -9.33 | [-11.49, -7.56] | 12/12 |
+| Exp 12 scaled logistic / volatile | Jacobi SVRG, tuned lr vs Adam (clamped), cosine lr | -23.99 | [-25.53, -21.72] | 12/12 |
+| Exp 12 scaled logistic / volatile | Jacobi SVRG, tuned lr vs Coordinate SVRG (ours) | -17.21 | [-18.40, -14.17] | 12/12 |
+| Exp 12 scaled logistic / volatile | Jacobi SVRG, tuned lr vs Coordinate SVRG, cosine lr (ours) | -12.46 | [-14.19, -9.35] | 12/12 |
 | Exp 11 well-scaled features | Jacobi SVRG (theory) vs SGD + momentum, cosine lr | -22.22 | [-22.35, -22.09] | 20/20 |
 | Exp 11 well-scaled features | Jacobi SVRG (theory) vs Coordinate SVRG, cosine lr (ours) | +1.16 | [+1.04, +1.32] | 0/20 |
 | Exp 11 well-scaled features | Jacobi SVRG (theory) vs Coordinate SVRG (ours) | +1.15 | [+1.03, +1.31] | 0/20 |
@@ -445,6 +473,13 @@ guaranteed 0.5 in expectation and loose by about 5x. On well-scaled data Jacobi 
 The honest framing: where the Hessian diagonal is available (linear and generalised-linear models), the simpler theory-derived method dominates the more elaborate
 adaptive engine; Coordinate SVRG's gradient-based scaling is a proxy that does not need the Hessian diagonal. The evaluation counts do not charge the one extra pass that computes `D`.
 
+**11. The Jacobi result carries to logistic regression with badly scaled features (Experiment 12), with two nuances.**
+Tuned Jacobi SVRG (`D = 0.25 mean(x^2) + L2`, the Hessian-diagonal upper bound; one extra pass) reaches round-off (median 9.7e-30) on all 12 seeds, ahead of
+Coordinate SVRG with cosine decay (7.4e-19) on 12/12 seeds, and needs 169k sample-gradient evaluations to the target against 485k (2.9x fewer). Tuned Adam with cosine
+decay stops at 8.7e-7, and SVRG + momentum at about 1.6e-4. Nuance 1: this run is tuned, not theory-prescribed, because the global strong-convexity modulus of the
+logistic loss is only the L2 weight, which makes the worst-case Johnson-Zhang recipe far too conservative to be informative. Nuance 2: here constant-rate Coordinate SVRG does
+**not** plateau (7e-14) and beats SVRG + momentum by 9.3 decades (12/12 seeds), so the constant-rate plateau seen on least squares is problem-dependent.
+
 ## Limitations (read before citing any number)
 
 * **Synthetic data only.** The simulator generates what the model assumes (linear hidden signal, additive noise, jumps). Nothing here is evidence of real-market performance.
@@ -452,7 +487,7 @@ adaptive engine; Coordinate SVRG's gradient-based scaling is a proxy that does n
 * **Held-out checks are limited.** Experiment 8 uses a random split for logistic regression and the network only, with learning rates tuned on training loss; Experiment 3 is out-of-sample in time but uses least squares. Nothing was tuned on validation data.
 * **Sample-gradient evaluations are not wall-clock time**, and the wall-clock figures are NumPy on one CPU core, not the PyTorch/JAX engines on a GPU.
 * **Tuning cost is excluded** from the iterative timings.
-* **Jacobi SVRG needs the Hessian diagonal**, available for linear and generalised-linear models but not in general, and its theory variant (single-sample steps) is slow per evaluation in wall-clock terms. It was tested on least squares only.
+* **Jacobi SVRG needs the Hessian diagonal**, available for linear and generalised-linear models but not in general, and its theory variant (single-sample steps) is slow per evaluation in wall-clock terms. It was tested on least squares (theory-prescribed and tuned) and logistic regression (tuned only).
 * **The adaptive variant has no convergence proof** (see `THEORY.md`, Section 4). The cosine-decay results are empirical.
 * **Uneven seed counts** (3 evaluation seeds in Experiment 5, 8 in Experiment 7) make those intervals wide. Intervals in the main tables are interquartile ranges; the paired table has bootstrap confidence intervals over seeds. No multiple-comparison correction.
 * **Some learning rates sit on the grid edge** (marked †; SVRG + momentum in several cells, SGD in the non-convex cell). The true optimum could be somewhat better, so the SVRG + momentum versus Coordinate SVRG ordering in those cells should not be over-read.
