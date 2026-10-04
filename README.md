@@ -4,7 +4,7 @@ A from-scratch variance-reduced optimizer with adaptive coordinate scaling, in t
 validated against an independent NumPy oracle, with a written theory note, a tuned ablation, and an
 honest account of what the evidence does and does not show.
 
-**Start here:** [`paper/technical_report.pdf`](paper/technical_report.pdf) (8-page technical report), [`docs/THEORY.md`](docs/THEORY.md) (what is proved, cited, open) and [`docs/RESULTS.md`](docs/RESULTS.md) (experiments and limitations).
+**Start here:** [`paper/technical_report.pdf`](paper/technical_report.pdf) (10-page technical report), [`docs/CLAIMS.md`](docs/CLAIMS.md) (every claim, its evidence and its limits), [`docs/THEORY.md`](docs/THEORY.md) (what is proved, cited, open) and [`docs/RESULTS.md`](docs/RESULTS.md) (experiments and limitations).
 
 ## Headline findings (synthetic testbeds; see `docs/RESULTS.md` for protocol, paired statistics and caveats)
 
@@ -18,6 +18,8 @@ honest account of what the evidence does and does not show.
 | The conditioning numbers predict where adaptive scaling helps: Jacobi scaling cuts kappa from about 1.1e7 to about 82 on badly scaled features and not at all on equal-variance features (Proposition 5, a corollary of the Johnson-Zhang theorem) | Experiment 10 |
 | **A method read off the theory**: Jacobi-preconditioned SVRG with hyper-parameters taken from the Johnson-Zhang recipe and no tuning reaches float64 round-off on 20/20 seeds of the badly scaled problem, where the best tuned adaptive variant reaches 3.5e-11 and needs 4.7x more evaluations to hit the target; measured contraction 0.08 to 0.10 per epoch against a guaranteed 0.5 | Experiment 11, Proposition 5 |
 | The Jacobi result carries to logistic regression with badly scaled features: tuned Jacobi SVRG reaches round-off on 12/12 seeds with 2.9x fewer evaluations than Coordinate SVRG with cosine decay (constant-rate Coordinate SVRG does not plateau there, so that effect is problem-dependent) | Experiment 12 |
+| Real data (breast cancer, wine, diabetes; raw features): preconditioning dominates, Jacobi SVRG is best but by only 0.06 to 0.52 decades over the best tuned baseline, and **the round-off result does not carry**: no method reached the target | Experiment 13 |
+| Ablating invariants: misaligned batches are 2.1x worse than no variance reduction; textbook Adam fails 76% to 100% of adversarial float32 trials where the full guard set fails 0%; the gradient bound, not the denominator floor, is the operative guard | Experiment 14 |
 | Gradient variance falls about 1e15x along the trajectory while SGD variance stays flat, and stays under the proved bounds in 25/25 probes | Experiment 2, Lemma 2, Proposition 3 |
 | No wall-clock win over a direct solve at `n = 40000`, `d = 200` (normal equations 0.06 s vs SVRG 0.08 s) | Experiment 5 |
 | Walk-forward signal tracking: differences from OLS are at most 0.005 in IC, none favouring SVRG over Adam | Experiment 3 (null result for SVRG) |
@@ -29,7 +31,7 @@ honest account of what the evidence does and does not show.
 | 1 | **Variance reduction**: `E||g_hat - grad F||^2 -> 0` | snapshot control variate; Lemma 2 + exact least-squares scaling identity (tested); Proposition 3 gives a `snapshot_interval` design rule |
 | 2 | **Deterministic sample alignment** | one batch id / batch object feeds both the live and snapshot gradient; `DeterministicBatchSampler` |
 | 3 | **Hardware contiguity** | torch: parameters re-pointed into one flat buffer, snapshot / mu / m / v in one `(4, N)` block |
-| 4 | **Coordinate boundary safeguards** | sanitised + bounded gradients, clamped (not offset) denominator, clipped ratio; Proposition 4 |
+| 4 | **Coordinate boundary safeguards** | sanitised + bounded gradients (the operative guard, Experiment 14), floored denominator, clipped ratio; Proposition 4 |
 
 ## Algorithm
 
@@ -45,7 +47,7 @@ w    <- w - lr * clip( m_hat / max(sqrt(v_hat), floor), +-update_clip )
 ```bash
 pip install -r requirements.txt
 python -m pytest tests/ -v                       # invariants, oracle, differential and fuzz tests
-python -m experiments.run_experiments            # regenerates results/ and docs/figures/ (~20 min, CPU)
+python -m experiments.run_experiments            # regenerates results/ and docs/figures/ (~30 min, CPU)
 python -m benchmarks.compare_optimizers --device cuda --wandb-mode online   # torch engine on a T4
 ```
 
@@ -61,10 +63,11 @@ src/jax_optimizer.py              stateless JAX engine (PyTree state, jax.jit)
 src/reference_numpy.py            independent NumPy oracle + 2x2 ablation switches + frozen preconditioner
 src/preconditioning.py            Jacobi diagonals for least squares / logistic, Johnson-Zhang recipe
 tests/test_math.py                invariant tests, theory checks, engine-vs-oracle differential tests
-experiments/run_experiments.py    twelve experiments with paired-bootstrap statistics (NumPy only)
+experiments/run_experiments.py    fourteen experiments with paired-bootstrap statistics (NumPy; Experiment 13 needs scikit-learn)
 benchmarks/compare_optimizers.py  torch engine vs Adam / SGD, logged to Weights & Biases
-paper/technical_report.tex/.pdf   8-page report; every number is a macro generated from results/experiments.json
+paper/technical_report.tex/.pdf   10-page report; every number is a macro generated from results/experiments.json
 paper/make_numbers.py             results JSON -> LaTeX macros and tables
+docs/CLAIMS.md                    claim -> kind of support -> evidence -> limits
 docs/THEORY.md                    lemmas with proofs, cited theorem, open questions
 docs/RESULTS.md                   tables, figures, interpretation, limitations
 results/                          raw JSON + tables from the last run
