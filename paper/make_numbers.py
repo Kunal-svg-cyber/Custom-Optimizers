@@ -177,6 +177,20 @@ def main() -> None:
     theirs = np.log10(np.maximum(np.asarray(coord["final_gaps"], dtype=float), 1e-40))
     macros["ExpElevenBadWins"] = f"{int(np.sum(mine < theirs))}/{len(mine)}"
 
+    # ---- Experiment 12 (scaled logistic with Jacobi SVRG) ----
+    v12 = r["logscaled"]["regimes"]["volatile"]["variants"]
+    d12 = log_diff(v12, "svrg_jacobi", "svrg_adam_cosine")
+    macros["ExpTwelveJacobiGap"] = sci(v12["svrg_jacobi"]["final_gap_median"])
+    macros["ExpTwelveCoordGap"] = sci(v12["svrg_adam_cosine"]["final_gap_median"])
+    macros["ExpTwelveWins"] = f"{d12['wins']}/{d12['n']}"
+    macros["ExpTwelveEvalsJacobi"] = f"{v12['svrg_jacobi']['evals_to_target_median']:,.0f}".replace(",", "{,}")
+    macros["ExpTwelveEvalsCoord"] = f"{v12['svrg_adam_cosine']['evals_to_target_median']:,.0f}".replace(",", "{,}")
+    macros["ExpTwelveSpeedup"] = f"{v12['svrg_adam_cosine']['evals_to_target_median'] / v12['svrg_jacobi']['evals_to_target_median']:.1f}"
+    macros["ExpTwelveAdamCosineGap"] = sci(v12["adam_cosine"]["final_gap_median"])
+    d12b = log_diff(v12, "svrg_adam", "svrg_momentum")
+    macros["ExpTwelveAdaptiveVsMomentum"] = signed(d12b["med"], 1)
+    macros["ExpTwelveSeeds"] = str(d12["n"])
+
     # ---- Experiment 3 (walk-forward) ----
     wf = r["walk_forward"]["by_budget"]
     diffs: List[float] = []
