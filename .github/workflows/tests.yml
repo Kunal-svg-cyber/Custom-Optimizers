@@ -21,7 +21,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install torch --index-url https://download.pytorch.org/whl/cpu
-          pip install jax jaxlib "numpy>=1.24" pytest "pyyaml>=6.0" "matplotlib>=3.7"
+          pip install jax jaxlib "numpy>=1.24" pytest "pyyaml>=6.0" "matplotlib>=3.7" scikit-learn
       - name: Unit, invariant, oracle and differential tests
         run: python -m pytest -v
       - name: Experiment suite smoke test (tiny settings)
