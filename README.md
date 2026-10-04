@@ -75,10 +75,11 @@ results/                          raw JSON + tables from the last run
 
 ## Validation status
 
-* The first GitHub Actions run (CPU PyTorch and JAX, Python 3.10 log) passed 44 of 45 tests: the environment and oracle tests, **all PyTorch engine tests** (flat contiguity, sample alignment, checkpoint round-trip, variance law, convergence), **all JAX engine tests**, the torch-vs-JAX parity test, and the **step-for-step differential tests of both engines against the NumPy oracle**.
-* The one failure was a wrong assertion in the torch fuzz test (it required the stored snapshot gradient, which holds its inputs verbatim, to be finite; the engine guarantees finiteness of the weights and moments, which the test also checks and which passed). The assertion is corrected in this version. Re-run CI to confirm 45 of 45 on both Python versions.
-* **Added after that CI run, not yet confirmed by CI:** a frozen-diagonal-preconditioner mode in both engines (`set_frozen_preconditioner` in PyTorch, `preconditioner=` in JAX) with differential tests against the oracle, plus tests for `src/preconditioning.py`. The default (adaptive) behaviour is unchanged. Push and check the Actions tab; the new tests are the ones to watch.
-* All experiment numbers come from the NumPy oracle, not from the torch/JAX engines. The engines have been validated against the oracle on CPU; they have not yet been benchmarked on a GPU.
+* **Google Colab (T4 GPU), run by the repository owner:** all **58 tests passed** (106 s), including every PyTorch and JAX engine test, the step-for-step differential tests against the NumPy oracle, the frozen-preconditioner tests and the fuzz tests.
+* **GPU engine against the oracle:** the PyTorch engine running on the T4 stayed within **1.8e-7** of the NumPy reference over 100 steps (float32).
+* **GPU benchmark against the oracle:** a 640-step benchmark on the T4 produced final SVRG numbers (loss gap 1.343e-7, distance to optimum 5.089e-4) and Adam numbers (2.016e-2, 0.2009) that the NumPy oracle reproduces to four significant digits with identical settings. (The benchmark compares methods at equal *steps*, not equal gradient budgets; it is a correctness check, not the evidence behind the headline findings.)
+* An earlier GitHub Actions run (Python 3.10 log) passed 44 of 45 tests; the one failure was a wrong assertion in the torch fuzz test, since corrected. Frozen-preconditioner tests were added afterwards; they passed on Colab, and a fresh CI run will confirm on Python 3.10 and 3.12.
+* All experiment numbers in `docs/RESULTS.md` come from the NumPy oracle, not from the torch/JAX engines. No speed claim is made: a telemetry-enabled SVRG step took about 2 ms on the T4 for a 32-parameter problem, dominated by host synchronisation.
 
 ## PyTorch usage
 
