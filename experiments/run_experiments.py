@@ -49,6 +49,11 @@ from src.environment import (  # noqa: E402
     generate_market,
     load_config,
 )
+from src.preconditioning import (  # noqa: E402
+    jacobi_diag_least_squares,
+    jacobi_diag_logistic,
+    johnson_zhang_recipe,
+)
 from src.reference_numpy import ReferenceConfig, ReferenceSVRG  # noqa: E402
 
 FloatArray = npt.NDArray[np.float64]
@@ -71,6 +76,7 @@ VARIANT_LABELS: Dict[str, str] = {
     "svrg_momentum": "SVRG + momentum",
     "svrg_adam": "Coordinate SVRG (ours)",
     "svrg_adam_cosine": "Coordinate SVRG, cosine lr (ours)",
+    "svrg_jacobi": "Jacobi SVRG, tuned lr",
 }
 
 
@@ -683,16 +689,8 @@ def gaps_on_grid(evals: Sequence[float], gaps: Sequence[float], grid: Sequence[f
 
 
 def theory_constants(features: FloatArray) -> Dict[str, float]:
-    """Constants for the Johnson-Zhang recipe on least squares with Jacobi D = diag(X^T X / n)."""
-    n: int = features.shape[0]
-    diag: FloatArray = np.mean(features ** 2, axis=0)
-    scaled: FloatArray = features / np.sqrt(diag)
-    l_d: float = float(np.max(np.sum(scaled ** 2, axis=1)))
-    gamma_d: float = float(np.linalg.eigvalsh(scaled.T @ scaled / float(n))[0])
-    eta: float = 0.1 / l_d
-    inner: int = int(math.ceil(50.0 * l_d / gamma_d))
-    alpha: float = 1.0 / (gamma_d * eta * (1.0 - 2.0 * l_d * eta) * inner) + 2.0 * l_d * eta / (1.0 - 2.0 * l_d * eta)
-    return {"L_D": l_d, "gamma_D": gamma_d, "eta": eta, "inner_steps": float(inner), "alpha": alpha}
+    """Johnson-Zhang recipe for least squares with Jacobi D = diag(X^T X / n)."""
+    return johnson_zhang_recipe(features, jacobi_diag_least_squares(features))
 
 
 def experiment_jacobi(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
@@ -821,6 +819,90 @@ def experiment_conditioning(cfg: Dict[str, Any], args: argparse.Namespace) -> Di
         print(f"  [exp10] {name:<38} kappa {out['problems'][name]['kappa']:.3e} -> "
               f"{out['problems'][name]['kappa_jacobi']:.3e} (x{out['problems'][name]['kappa_ratio']:.1f})")
     out["seeds"] = args.cond_seeds
+    return out
+
+
+def scaled_logistic_factory(base: RegimeConfig, l2: float, decades: float) -> ObjectiveFactory:
+    """Logistic regression on sign(return) with column scales spread over ``decades`` decades."""
+    def make(seed: int, sigma: float) -> Any:
+        ds = make_dataset(base, seed, sigma)
+        scale_rng = np.random.default_rng(seed + 17)
+        scales: FloatArray = 10.0 ** scale_rng.uniform(-decades / 2.0, decades / 2.0, size=ds.n_features)
+        labels: FloatArray = np.where(ds.targets >= 0.0, 1.0, -1.0)
+        return LogisticRegression(ds.features * scales, labels, l2)
+    return make
+
+
+def experiment_logistic_scaled(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    """Experiment 12: does the Jacobi result carry from least squares to logistic regression?
+
+    Same protocol as Experiment 4 but with badly scaled features, plus tuned Jacobi SVRG with the
+    Hessian-diagonal upper bound D = 0.25 mean(x^2) + l2 (one extra pass). No theory-prescribed
+    run here: the global strong-convexity modulus of logistic loss is only l2, so the worst-case
+    recipe is far too conservative to be informative.
+    """
+    base: RegimeConfig = dataclasses.replace(
+        RegimeConfig.from_dict(cfg), n_samples=args.lg_samples, n_features=args.lg_features,
+    )
+    sigma: float = float(cfg["environment"]["noise_sigma_levels"]["volatile"])
+    factory = scaled_logistic_factory(base, args.lg_l2, args.het_decades)
+    out = run_ablation(
+        cfg, args, factory, tag="exp12", regimes={"volatile": sigma},
+        epochs=args.lg_epochs, batch_size=args.lg_batch,
+        tune_seeds=args.lg_tune_seeds, eval_seeds=args.lg_eval_seeds,
+        seed_offset=11000, lr_points=args.lg_lr_points,
+    )
+    seed0: int = int(cfg["seed"]) + 11000
+    tune_sets = [factory(seed0 + 1000 + i, sigma) for i in range(args.lg_tune_seeds)]
+    eval_sets = [factory(seed0 + 2000 + i, sigma) for i in range(args.lg_eval_seeds)]
+    for o in tune_sets + eval_sets:
+        o.prepare()
+    n: int = tune_sets[0].n
+    budget: int = int(args.lg_epochs * n)
+    interval: int = int(cfg["optimizer"]["snapshot_interval"])
+    lr_grid: FloatArray = 10.0 ** np.linspace(args.lr_min_exp, args.lr_max_exp, args.lg_lr_points)
+    scores: List[float] = []
+    for lr in lr_grid:
+        gaps = [
+            diag_precond_svrg(o, jacobi_diag_logistic(o.features, o.l2), float(lr), interval, args.lg_batch,
+                              budget, "last", seed=seed0 + 1000 + j,
+                              sampler=DeterministicBatchSampler(n, args.lg_batch, seed0 + 1000 + j)).final_gap
+            for j, o in enumerate(tune_sets)
+        ]
+        scores.append(float(np.median(gaps)))
+    best_idx: int = int(np.argmin(np.where(np.isfinite(scores), scores, np.inf)))
+    best_lr: float = float(lr_grid[best_idx])
+    block = out["regimes"]["volatile"]
+    grid: List[float] = list(block["variants"]["svrg_adam"]["curve_evals"])
+    finals: List[float] = []
+    curves: List[List[float]] = []
+    to_target: List[float] = []
+    for i, o in enumerate(eval_sets):
+        run = diag_precond_svrg(o, jacobi_diag_logistic(o.features, o.l2), best_lr, interval, args.lg_batch,
+                                budget, "last", seed=seed0 + 2000 + i,
+                                sampler=DeterministicBatchSampler(n, args.lg_batch, seed0 + 2000 + i))
+        finals.append(run.final_gap)
+        curves.append(gaps_on_grid(run.evals, run.gaps, grid))
+        target = args.target_ratio * run.gaps[0]
+        hit = [e for e, g in zip(run.evals, run.gaps) if g <= target]
+        to_target.append(hit[0] if hit else float("inf"))
+    q25, q50, q75 = quartiles(finals)
+    arr = np.asarray(curves, dtype=np.float64)
+    block["variants"]["svrg_jacobi"] = {
+        "best_lr": best_lr, "best_lr_at_grid_edge": bool(best_idx in (0, len(lr_grid) - 1)),
+        "tune_scores": scores, "final_gap_q25": q25, "final_gap_median": q50, "final_gap_q75": q75,
+        "final_gaps": finals, "final_loss_median": float("nan"),
+        "evals_to_target_median": float(np.median(to_target)),
+        "seconds_to_target_median": float("nan"),
+        "curve_evals": grid, "curve_seconds_median": [float("nan")] * len(grid),
+        "curve_q25": np.percentile(arr, 25, axis=0).tolist(),
+        "curve_median": np.percentile(arr, 50, axis=0).tolist(),
+        "curve_q75": np.percentile(arr, 75, axis=0).tolist(),
+    }
+    print(f"  [exp12] svrg_jacobi              lr={best_lr:.2e}  final gap median {fmt(q50)}")
+    out["description"] = (f"Logistic regression on sign(return) with column scales over {args.het_decades:g} decades, "
+                          f"L2={args.lg_l2:g}, n={base.n_samples}, d={base.n_features}, batch {out['batch_size']}, "
+                          f"snapshot every {out['snapshot_interval']} steps; Jacobi SVRG added with D = 0.25 mean(x^2) + L2")
     return out
 
 
@@ -1200,7 +1282,8 @@ def significance_lines(results: Dict[str, Any]) -> List[str]:
         "|---|---|---|---|---|",
     ]
     names = {"ablation": "Exp 1 least squares", "logistic": "Exp 4 logistic", "highdim": "Exp 5 larger LS",
-             "hetero": "Exp 6 bad scaling", "nonconvex": "Exp 7 non-convex"}
+             "hetero": "Exp 6 bad scaling", "nonconvex": "Exp 7 non-convex",
+             "logscaled": "Exp 12 scaled logistic"}
     baselines = ["sgd_momentum", "sgd_momentum_cosine", "adam", "adam_cosine"]
     for key, label in names.items():
         if key not in results:
@@ -1213,6 +1296,9 @@ def significance_lines(results: Dict[str, Any]) -> List[str]:
             logs = {m: np.log10(np.maximum(np.asarray(v[m]["final_gaps"], dtype=float), 1e-40)) for m in v}
             pairs = [("svrg_adam_cosine", best_base), ("svrg_adam", best_base), ("svrg_momentum", best_base),
                      ("svrg_adam", "svrg_momentum")]
+            if "svrg_jacobi" in v:
+                pairs += [("svrg_jacobi", best_base), ("svrg_jacobi", "svrg_adam"),
+                          ("svrg_jacobi", "svrg_adam_cosine")]
             for a_name, b_name in pairs:
                 if a_name not in logs or b_name not in logs:
                     continue
@@ -1269,6 +1355,7 @@ def write_tables(results: Dict[str, Any], path: Path) -> None:
         ("highdim", "Experiment 5: larger problem with wall-clock timing"),
         ("hetero", "Experiment 6: badly scaled features (adaptive scaling's home turf)"),
         ("nonconvex", "Experiment 7: non-convex network (no guarantees apply)"),
+        ("logscaled", "Experiment 12: logistic regression with badly scaled features (Jacobi SVRG added)"),
     )
     for key, title in ablation_blocks:
         if key not in results:
@@ -1494,6 +1581,7 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
         "sgd_momentum": "#8c8c8c", "sgd_momentum_cosine": "#5a5a5a",
         "adam": "#6baed6", "adam_cosine": "#1f77b4",
         "svrg_momentum": "#ff7f0e", "svrg_adam": "#d62728", "svrg_adam_cosine": "#7f0000",
+        "svrg_jacobi": "#2ca02c",
     }
     for key, fname, title in (
         ("ablation", "ablation_curves.png", "Least squares: tuned ablation, median and IQR over held-out seeds"),
@@ -1501,6 +1589,7 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
         ("highdim", "highdim_curves.png", "Larger least-squares problem"),
         ("hetero", "hetero_curves.png", "Least squares with badly scaled features"),
         ("nonconvex", "nonconvex_curves.png", "Non-convex network: squared full-gradient norm"),
+        ("logscaled", "logscaled_curves.png", "Logistic regression with badly scaled features"),
     ):
         if key not in results:
             continue
@@ -1619,7 +1708,7 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default=str(REPO_ROOT / "configs" / "stochastic_regime.yaml"))
-    parser.add_argument("--only", nargs="+", type=int, choices=list(range(1, 12)), default=list(range(1, 12)))
+    parser.add_argument("--only", nargs="+", type=int, choices=list(range(1, 13)), default=list(range(1, 13)))
     parser.add_argument("--quick", action="store_true", help="tiny settings for a smoke test")
     parser.add_argument("--tables-only", action="store_true",
                         help="regenerate tables.md and figures from the stored results.json, run nothing")
@@ -1744,6 +1833,9 @@ def main() -> None:
     if 11 in args.only:
         print("Experiment 11: Jacobi-preconditioned SVRG")
         results["jacobi"] = experiment_jacobi(cfg, args)
+    if 12 in args.only:
+        print("Experiment 12: scaled logistic regression with Jacobi SVRG")
+        results["logscaled"] = experiment_logistic_scaled(cfg, args)
 
     out_dir: Path = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
