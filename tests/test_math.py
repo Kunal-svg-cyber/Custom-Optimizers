@@ -36,6 +36,11 @@ from src.environment import (  # noqa: E402
     generate_market,
     load_config,
 )
+from src.preconditioning import (  # noqa: E402
+    jacobi_diag_least_squares,
+    jacobi_diag_logistic,
+    johnson_zhang_recipe,
+)
 from src.reference_numpy import ReferenceConfig, ReferenceSVRG  # noqa: E402
 
 try:
@@ -501,6 +506,39 @@ def test_least_squares_gap_matches_loss_difference() -> None:
     obj = LeastSquares(dataset.features, dataset.targets)
     w = np.linspace(-1.0, 1.0, obj.d)
     assert abs(obj.gap(w) - (obj.loss(w) - obj.optimal_loss)) < 1e-12
+
+
+def test_reference_frozen_preconditioner_step_and_validation() -> None:
+    cfg = ReferenceConfig(lr=0.5, beta1=0.0, variance_reduction=False, adaptive=True)
+    ref = ReferenceSVRG(cfg, dim=2)
+    ref.set_preconditioner(np.array([2.0, 4.0]))            # takes precedence over `adaptive`
+    w1 = ref.step(np.zeros(2), np.array([1.0, -2.0]))
+    assert np.allclose(w1, [-0.5 * 1.0 / 2.0, 0.5 * 2.0 / 4.0])
+    with pytest.raises(ValueError):
+        ref.set_preconditioner(np.array([1.0, 0.0]))
+    with pytest.raises(ValueError):
+        ref.set_preconditioner(np.array([1.0, 2.0, 3.0]))
+    with pytest.raises(ValueError):
+        ref.set_preconditioner(np.array([1.0, float("nan")]))
+
+
+def test_preconditioning_helpers_match_definitions() -> None:
+    from experiments.run_experiments import LogisticRegression
+
+    dataset, _, _ = ls_problem()
+    x = dataset.features
+    assert np.allclose(jacobi_diag_least_squares(x), np.diag(x.T @ x / x.shape[0]))
+    labels = np.where(dataset.targets >= 0.0, 1.0, -1.0)
+    obj = LogisticRegression(x, labels, l2=1e-2)
+    bound = jacobi_diag_logistic(x, 1e-2)
+    rng = np.random.default_rng(0)
+    for _ in range(5):
+        w = rng.standard_normal(x.shape[1])
+        assert np.all(np.diag(obj._hessian(w)) <= bound + 1e-12)    # a valid curvature upper bound
+    recipe = johnson_zhang_recipe(x, jacobi_diag_least_squares(x))
+    assert recipe["alpha"] <= 0.5 + 1e-12
+    with pytest.raises(ValueError):
+        jacobi_diag_logistic(x, -1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -1104,3 +1142,121 @@ def test_jax_fuzz_never_produces_nonfinite_values() -> None:
             assert bool(jnp.all(jnp.isfinite(params))), (trial, step)
             assert bool(jnp.all(jnp.isfinite(state.exp_avg)))
             assert bool(jnp.all(jnp.isfinite(state.exp_avg_sq)))
+
+
+# --------------------------------------------------------------------------- #
+# Frozen diagonal preconditioner in the engines (Proposition 5)
+# --------------------------------------------------------------------------- #
+def _frozen_diag(dim: int) -> np.ndarray:
+    return np.exp(np.random.default_rng(5).uniform(-1.0, 1.0, size=dim))
+
+
+@requires_torch
+def test_torch_frozen_preconditioner_matches_numpy_reference_trajectory() -> None:
+    for beta1 in (0.0, 0.9):
+        dataset, sampler, chunks, w, batch_closure, chunk_closure = _torch_ls_setup()
+        diag = _frozen_diag(dataset.n_features)
+        interval, steps = 5, 14
+        opt = CoordinateSVRG([w], lr=0.02, betas=(beta1, 0.999), snapshot_interval=interval)
+        opt.set_frozen_preconditioner(torch.as_tensor(diag))
+        ref = ReferenceSVRG(
+            ReferenceConfig(lr=0.02, beta1=beta1, snapshot_interval=interval), dataset.n_features
+        )
+        ref.set_preconditioner(diag)
+        w_ref = np.zeros(dataset.n_features)
+        for k in range(steps):
+            if opt.needs_snapshot:
+                opt.refresh_snapshot(chunk_closure, num_chunks=len(chunks))
+            opt.step(batch_closure)
+            if ref.needs_snapshot:
+                ref.refresh_snapshot(w_ref, dataset.full_gradient(w_ref))
+            rows = sampler.batch(k)
+            w_ref = ref.step(
+                w_ref,
+                sgd_batch_gradient(dataset, rows, w_ref),
+                sgd_batch_gradient(dataset, rows, ref.snapshot),
+            )
+            assert np.allclose(w.detach().numpy(), w_ref, atol=1e-8), (beta1, k)
+
+
+@requires_torch
+def test_torch_frozen_preconditioner_validation_and_clear() -> None:
+    w_a = torch.nn.Parameter(torch.ones(4))
+    w_b = torch.nn.Parameter(torch.ones(4))
+    opt_a = CoordinateSVRG([w_a], lr=0.1)
+    opt_b = CoordinateSVRG([w_b], lr=0.1)
+    with pytest.raises(ValueError):
+        opt_b.set_frozen_preconditioner(torch.ones(3))                      # wrong size
+    with pytest.raises(ValueError):
+        opt_b.set_frozen_preconditioner(torch.tensor([1.0, 1.0, 0.0, 1.0]))  # not positive
+    opt_b.set_frozen_preconditioner([torch.full((4,), 2.0)])                # list of tensors accepted
+    opt_b.clear_frozen_preconditioner()
+
+    def make_closure(w: "torch.nn.Parameter") -> Callable[[int], "torch.Tensor"]:
+        return lambda _: ((w - 3.0) ** 2).sum()
+
+    for opt, w in ((opt_a, w_a), (opt_b, w_b)):
+        closure = make_closure(w)
+        opt.refresh_snapshot(closure)
+        opt.step(closure)
+    assert torch.equal(w_a.detach(), w_b.detach())         # cleared == never set (adaptive path)
+
+
+@requires_torch
+def test_torch_frozen_preconditioner_survives_load_state_dict_on_same_object() -> None:
+    dataset, _, chunks, w_a, closure_a, chunk_a = _torch_ls_setup()
+    _, _, _, w_b, closure_b, chunk_b = _torch_ls_setup()
+    diag = torch.as_tensor(_frozen_diag(dataset.n_features))
+    opt_a = CoordinateSVRG([w_a], lr=0.02, snapshot_interval=1000)
+    opt_b = CoordinateSVRG([w_b], lr=0.02, snapshot_interval=1000)
+    for opt, chunk_closure in ((opt_a, chunk_a), (opt_b, chunk_b)):
+        opt.set_frozen_preconditioner(diag)
+        opt.refresh_snapshot(chunk_closure, num_chunks=len(chunks))
+    opt_a.step(closure_a)
+    opt_b.step(closure_b)
+    opt_a.load_state_dict(copy.deepcopy(opt_a.state_dict()))     # rebuilds the flat blocks
+    opt_a.step(closure_a)                                         # must still use the frozen D
+    opt_b.step(closure_b)
+    assert torch.allclose(w_a.detach(), w_b.detach(), atol=1e-12)
+
+
+@requires_jax
+def test_jax_frozen_preconditioner_matches_numpy_reference_trajectory() -> None:
+    for beta1 in (0.0, 0.9):
+        dataset, sampler, loss_fn, batch_at, chunk_stack = _jax_ls_setup()
+        diag = _frozen_diag(dataset.n_features)
+        interval, steps = 5, 10
+        config = SVRGConfig(lr=0.02, beta1=beta1, snapshot_interval=interval)
+        step_fn = make_svrg_step(loss_fn, config, preconditioner=jnp.asarray(diag, dtype=jnp.float32))
+        params = jnp.zeros((dataset.n_features,), dtype=jnp.float32)
+        state = init_state(params)
+        ref = ReferenceSVRG(
+            ReferenceConfig(lr=0.02, beta1=beta1, snapshot_interval=interval), dataset.n_features
+        )
+        ref.set_preconditioner(diag)
+        w_ref = np.zeros(dataset.n_features)
+        since = interval
+        for k in range(steps):
+            if since >= interval:
+                state = refresh_snapshot(params, state, compute_full_gradient(loss_fn, params, chunk_stack))
+                since = 0
+            params, state, _ = step_fn(params, state, batch_at(k))
+            since += 1
+            if ref.needs_snapshot:
+                ref.refresh_snapshot(w_ref, dataset.full_gradient(w_ref))
+            rows = sampler.batch(k)
+            w_ref = ref.step(
+                w_ref,
+                sgd_batch_gradient(dataset, rows, w_ref),
+                sgd_batch_gradient(dataset, rows, ref.snapshot),
+            )
+            assert np.allclose(np.asarray(params), w_ref, atol=1e-4), (beta1, k)
+
+
+@requires_jax
+def test_jax_frozen_preconditioner_rejects_invalid_values() -> None:
+    config = SVRGConfig(lr=0.1)
+    with pytest.raises(ValueError):
+        make_svrg_step(lambda p, b: jnp.sum(p), config, preconditioner=jnp.array([1.0, 0.0]))
+    with pytest.raises(ValueError):
+        make_svrg_step(lambda p, b: jnp.sum(p), config, preconditioner=jnp.array([1.0, jnp.nan]))
