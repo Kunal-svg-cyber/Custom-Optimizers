@@ -73,6 +73,22 @@ class ReferenceSVRG:
         self.step_count: int = 0
         self.steps_since_snapshot: int = 0
         self.lr_scale: float = 1.0  # external learning-rate schedule hook
+        self.preconditioner: Optional[FloatArray] = None  # frozen diagonal D (Proposition 5)
+
+    def set_preconditioner(self, diag: FloatArray) -> None:
+        """Freeze a positive diagonal ``D``: the step becomes ``w - lr * m_hat / D`` (no ratio clip).
+
+        Takes precedence over ``adaptive``. ``D`` is clamped below at the same floor as the
+        adaptive denominator so division can never overflow.
+        """
+        arr: FloatArray = np.asarray(diag, dtype=self.dtype)
+        if arr.shape != self.exp_avg.shape:
+            raise ValueError("preconditioner must have the same shape as the parameters")
+        if not np.all(np.isfinite(arr)) or np.any(arr <= 0.0):
+            raise ValueError("preconditioner must be finite and strictly positive")
+        finfo = np.finfo(self.dtype)
+        floor: float = max(self.config.eps, 4.0 * math.sqrt(float(finfo.tiny)))
+        self.preconditioner = np.maximum(arr, floor)
 
     @property
     def needs_snapshot(self) -> bool:
@@ -131,7 +147,9 @@ class ReferenceSVRG:
         bias2: float = 1.0 - cfg.beta2 ** t
 
         m_hat: FloatArray = self.exp_avg / bias1
-        if cfg.adaptive:
+        if self.preconditioner is not None:
+            update = m_hat / self.preconditioner
+        elif cfg.adaptive:
             denom: FloatArray = np.maximum(np.sqrt(self.exp_avg_sq / bias2), denom_floor)
             update: FloatArray = np.clip(m_hat / denom, -cfg.update_clip, cfg.update_clip)
         else:

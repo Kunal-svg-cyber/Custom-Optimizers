@@ -31,7 +31,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import torch
 from torch import Tensor
@@ -65,6 +65,7 @@ class _FlatBlock:
     flat_params: Tensor  # (N,)  parameters live here
     state: Tensor        # (4, N) snapshot, mu, exp_avg, exp_avg_sq
     scratch: Tensor      # (3, N) live grad, snapshot grad / denominator, backup / update
+    precond: Optional[Tensor] = None  # frozen diagonal D (Proposition 5), or None for adaptive scaling
 
 
 class CoordinateSVRG(Optimizer):
@@ -136,6 +137,7 @@ class CoordinateSVRG(Optimizer):
         self.last_stats: Dict[str, float] = {}
         self.last_batch_id: Optional[int] = None
         self._blocks: Dict[int, _FlatBlock] = {}
+        self._preconditioners: Dict[int, Tensor] = {}
 
     # ------------------------------------------------------------------ #
     # Public introspection
@@ -163,6 +165,46 @@ class CoordinateSVRG(Optimizer):
         """Row views (snapshot, mu, exp_avg, exp_avg_sq) of the flat state block."""
         block: _FlatBlock = self._ensure_block(group_index)
         return {key: block.state[row] for row, key in enumerate(_STATE_KEYS)}
+
+    # ------------------------------------------------------------------ #
+    # Frozen diagonal preconditioner (Proposition 5)
+    # ------------------------------------------------------------------ #
+    def set_frozen_preconditioner(
+        self, diag: Union[Tensor, Sequence[Tensor]], group_index: int = 0
+    ) -> None:
+        """Replace adaptive scaling by a FIXED positive diagonal ``D`` for one parameter group.
+
+        The step becomes ``w <- w - lr * m_hat / D`` with no ratio clipping, which is the setting
+        of Proposition 5 / the Johnson-Zhang theorem (use ``betas=(0.0, ...)`` for the exact
+        theorem). ``diag`` is either one flat tensor with one entry per parameter of the group, or
+        a sequence of tensors shaped like the group's parameters. ``D`` is clamped below at the
+        same floor as the adaptive denominator. The preconditioner is not part of ``state_dict``;
+        it is kept across ``load_state_dict`` on the same object, but a freshly constructed
+        optimizer must be given it again.
+        """
+        block: _FlatBlock = self._ensure_block(group_index)
+        if isinstance(diag, Tensor):
+            flat: Tensor = diag.detach().reshape(-1)
+        else:
+            flat = torch.cat([d.detach().reshape(-1) for d in diag])
+        if flat.numel() != block.total:
+            raise ValueError(
+                f"preconditioner has {flat.numel()} entries but group {group_index} has {block.total} parameters"
+            )
+        flat = flat.to(dtype=block.flat_params.dtype, device=block.flat_params.device)
+        if not bool(torch.isfinite(flat).all()) or bool((flat <= 0).any()):
+            raise ValueError("preconditioner must be finite and strictly positive")
+        finfo = torch.finfo(block.flat_params.dtype)
+        floor: float = max(float(self.param_groups[group_index]["eps"]), 4.0 * math.sqrt(finfo.tiny))
+        stored: Tensor = flat.clamp(min=floor).clone()
+        self._preconditioners[group_index] = stored
+        block.precond = stored
+
+    def clear_frozen_preconditioner(self, group_index: int = 0) -> None:
+        """Return the group to adaptive (second-moment) scaling."""
+        self._preconditioners.pop(group_index, None)
+        if group_index in self._blocks:
+            self._blocks[group_index].precond = None
 
     # ------------------------------------------------------------------ #
     # Lazy state / flat memory construction
@@ -218,6 +260,7 @@ class CoordinateSVRG(Optimizer):
             state=state_block,
             scratch=scratch,
         )
+        block.precond = self._preconditioners.get(group_index)
         self._blocks[group_index] = block
         return block
 
@@ -439,16 +482,22 @@ class CoordinateSVRG(Optimizer):
         exp_avg.mul_(beta1).add_(g_hat, alpha=1.0 - beta1)
         exp_avg_sq.mul_(beta2).addcmul_(g_hat, g_hat, value=1.0 - beta2)
 
-        # Coordinate boundary safeguard: clamp the denominator, never add to it.
-        denom: Tensor = g_snap  # snapshot gradients are no longer needed
-        torch.sqrt(exp_avg_sq, out=denom)
-        denom.div_(math.sqrt(bias2))
-        denom.clamp_(min=denom_floor)
-
         update: Tensor = block.scratch[_SCRATCH_BACKUP]  # backup was restored already
-        torch.div(exp_avg, denom, out=update)
-        update.div_(bias1)
-        update.clamp_(-update_clip, update_clip)
+        denom: Tensor
+        if block.precond is not None:
+            # Frozen diagonal preconditioner: w <- w - lr * m_hat / D (no ratio clip, theory setting).
+            denom = block.precond
+            torch.div(exp_avg, denom, out=update)
+            update.div_(bias1)
+        else:
+            # Coordinate boundary safeguard: clamp the denominator, never add to it.
+            denom = g_snap  # snapshot gradients are no longer needed
+            torch.sqrt(exp_avg_sq, out=denom)
+            denom.div_(math.sqrt(bias2))
+            denom.clamp_(min=denom_floor)
+            torch.div(exp_avg, denom, out=update)
+            update.div_(bias1)
+            update.clamp_(-update_clip, update_clip)
         params.add_(update, alpha=-lr)
 
         if not self.telemetry:

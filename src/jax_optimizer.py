@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import jax
 import jax.numpy as jnp
@@ -201,13 +201,25 @@ def variance_reduced_gradient(
     )
 
 
-def make_svrg_step(loss_fn: LossFn, config: SVRGConfig) -> StepFn:
+def make_svrg_step(
+    loss_fn: LossFn, config: SVRGConfig, preconditioner: Optional[PyTree] = None
+) -> StepFn:
     """Build a jitted pure step ``(params, state, batch) -> (params', state', stats)``.
 
     ``loss_fn(params, batch)`` must return the mean scalar loss on ``batch``.
     If no snapshot has been committed yet, the step degrades safely to the plain
     mini-batch gradient instead of using a meaningless control variate.
+
+    ``preconditioner`` (optional) is a pytree shaped like ``params`` holding a FIXED positive
+    diagonal ``D``. When given, adaptive scaling is replaced by ``w - lr * m_hat / D`` with no
+    ratio clipping, the setting of Proposition 5 (use ``beta1 = 0`` for the exact theorem).
     """
+    pre_leaves: Optional[List[Array]] = None
+    if preconditioner is not None:
+        pre_leaves = jax.tree_util.tree_leaves(preconditioner)
+        for leaf in pre_leaves:
+            if not bool(jnp.all(jnp.isfinite(leaf))) or bool(jnp.any(leaf <= 0)):
+                raise ValueError("preconditioner must be finite and strictly positive")
     lr: float = config.lr
     beta1: float = config.beta1
     beta2: float = config.beta2
@@ -240,8 +252,9 @@ def make_svrg_step(loss_fn: LossFn, config: SVRGConfig) -> StepFn:
         denoms_min: List[Array] = []
         nonfinite: Array = jnp.zeros((), dtype=jnp.float32)
 
-        for p, snap, mu, m, v, gl, gs in zip(
-            p_leaves, snap_leaves, mu_leaves, m_leaves, v_leaves, gl_leaves, gs_leaves
+        pre_iter: List[Optional[Array]] = list(pre_leaves) if pre_leaves is not None else [None] * len(p_leaves)
+        for p, snap, mu, m, v, gl, gs, pre in zip(
+            p_leaves, snap_leaves, mu_leaves, m_leaves, v_leaves, gl_leaves, gs_leaves, pre_iter
         ):
             grad_bound, denom_floor = _leaf_bounds(p.dtype, config.eps)
             vr: Array = gl - gs + mu
@@ -256,10 +269,12 @@ def make_svrg_step(loss_fn: LossFn, config: SVRGConfig) -> StepFn:
 
             bias1: Array = (1.0 - beta1 ** t).astype(p.dtype)
             bias2: Array = (1.0 - beta2 ** t).astype(p.dtype)
-            denom: Array = jnp.maximum(jnp.sqrt(v_new) / jnp.sqrt(bias2), denom_floor)
-            update: Array = jnp.clip(
-                (m_new / bias1) / denom, -config.update_clip, config.update_clip
-            )
+            if pre is not None:
+                denom: Array = jnp.maximum(jnp.asarray(pre, dtype=p.dtype), denom_floor)
+                update: Array = (m_new / bias1) / denom
+            else:
+                denom = jnp.maximum(jnp.sqrt(v_new) / jnp.sqrt(bias2), denom_floor)
+                update = jnp.clip((m_new / bias1) / denom, -config.update_clip, config.update_clip)
 
             new_p.append(p - lr * update)
             new_m.append(m_new)
