@@ -653,6 +653,22 @@ def test_csv_panel_loader_aligns_on_common_dates() -> None:
     assert np.allclose(loaded_close[:, 1], close[5:, 1])      # Adj Close is preferred over Close
 
 
+def test_report_numbers_are_in_sync_with_stored_results_and_macros_are_defined() -> None:
+    """The report's numbers are generated from results/experiments.json; neither may drift or dangle."""
+    import re
+    import subprocess
+
+    check = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "paper" / "make_numbers.py"), "--check"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+    )
+    assert check.returncode == 0, check.stdout + check.stderr
+    defined = set(re.findall(r"\\newcommand\{\\(\w+)\}", (REPO_ROOT / "paper" / "numbers.tex").read_text(encoding="utf-8")))
+    used = set(re.findall(r"\\(Exp[A-Za-z]+)", (REPO_ROOT / "paper" / "technical_report.tex").read_text(encoding="utf-8")))
+    assert used, "report uses no generated macros"
+    assert used <= defined, f"undefined macros in the report: {sorted(used - defined)}"
+
+
 def test_least_squares_gap_matches_loss_difference() -> None:
     from experiments.run_experiments import LeastSquares
 
