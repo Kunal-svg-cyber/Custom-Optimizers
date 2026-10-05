@@ -15,7 +15,7 @@ Every substantive claim in this repository, the kind of support it has, where to
 | 4 | The update cannot produce NaN or Inf and each coordinate moves at most `lr * update_clip` | proved, tested | Proposition 4; fuzz tests (oracle, torch, JAX); Experiment 14 | covers the update path; stored snapshot rows keep their inputs verbatim |
 | 5 | The gradient bound, not the denominator floor, is the operative numerical guard | measured | Experiment 14 (textbook Adam and clamp-only fail identically, full guards never) | adversarial float32 inputs, not typical training |
 | 6 | Batch alignment between the live and snapshot gradients is what delivers variance reduction | measured, tested | Experiment 14a (misaligned is 2.1x worse than plain SGD); `test_misaligned_*` | least squares |
-| 7 | PyTorch and JAX engines follow the same update rule as the oracle | tested, measured | step-for-step differential tests; torch-vs-JAX parity; all 58 tests passed on a Colab T4 runtime; GPU engine within 1.8e-7 of the oracle over 100 steps; a 640-step GPU benchmark reproduced the oracle's final numbers to four digits | correctness, not speed; a fresh GitHub Actions run will confirm the newest tests on Python 3.10 and 3.12 |
+| 7 | PyTorch and JAX engines follow the same update rule as the oracle | tested, measured | step-for-step differential tests; torch-vs-JAX parity; the full suite (58 tests at the time) passed on a Colab T4 runtime; GPU engine within 1.8e-7 of the oracle over 100 steps; a 640-step GPU benchmark reproduced the oracle's final numbers to four digits | correctness, not speed; a fresh GitHub Actions run will confirm the newest tests on Python 3.10 and 3.12 |
 | 8 | Parameters, snapshot and moments are contiguous in PyTorch | tested | `test_torch_flat_contiguity_*` | PyTorch engine only |
 
 ## Theory
@@ -35,7 +35,7 @@ Every substantive claim in this repository, the kind of support it has, where to
 | 14 | Adaptive scaling helps when features are badly scaled and hurts on a larger well-scaled problem | measured | Experiments 5, 6, 12 | one problem family each; Experiment 5 has 3 seeds |
 | 15 | A method with theory-prescribed hyper-parameters (Jacobi SVRG, no tuning) beats the best tuned adaptive variant on badly scaled least squares | measured | Experiment 11 (20/20 seeds; 4.7x fewer evaluations) | needs the Hessian diagonal; one extra data pass not charged |
 | 16 | The Jacobi result carries to logistic regression with bad scaling | measured | Experiment 12 (12/12 seeds; tuned, not theory-prescribed) | synthetic; constant-rate Coordinate SVRG does not plateau there, so that effect is problem-dependent |
-| 17 | On three real datasets with raw features, preconditioned methods dominate unpreconditioned ones; Jacobi SVRG is best but only by 0.06 to 0.52 decades over the best tuned baseline | measured | Experiment 13 | three small non-financial datasets; seeds vary batch order only; no method reached the target; one baseline learning rate on the grid edge |
+| 17 | On three real datasets with raw features, preconditioned methods dominate unpreconditioned ones; Jacobi SVRG has the lowest median gap on wine and diabetes and ties with Coordinate SVRG (cosine) on breast cancer, by only 0.06 to 0.52 decades over the best tuned baseline | measured | Experiment 13 | three small non-financial datasets; seeds vary batch order only; no method reached the target; one baseline learning rate on the grid edge |
 | 18 | The round-off result does **not** carry to the real datasets | measured | Experiment 13 | |
 | 19 | Non-convex network: SVRG reaches a sharper stationary point but generalises worse | measured | Experiments 7, 8 | one small network; learning rates tuned on training loss |
 | 20 | No wall-clock win over a direct solve at `n = 40000`, `d = 200` | measured | Experiment 5 | NumPy on one CPU core; tuning cost excluded |
@@ -47,7 +47,8 @@ Every substantive claim in this repository, the kind of support it has, where to
 |---|---|---|---|---|
 | 22 | The walk-forward pipeline uses no future information | tested | `test_market_features_are_causal`, `test_walk_forward_predictions_have_no_lookahead` | tests use synthetic data; the live data path (`yfinance`/CSV) is not unit-tested beyond the CSV loader |
 | 23 | The pipeline detects a genuine signal and not a shifted placebo | tested | `test_signal_is_detected_and_placebo_is_not` (three seeds, strong synthetic signal) | a weak signal (strength 1.0) is detected on some seeds and not others, as expected at that signal-to-noise |
-| 24 | Any statement about real-market predictability or optimizer effects on real returns | **not claimed** | script provided, no results run by the author | to be filled in only after the owner runs it |
+| 24 | The numbers in the report are exactly those in `results/experiments.json`, and the report references no undefined number | tested | `test_report_numbers_are_in_sync_*`; `python paper/make_numbers.py --check` | covers generated numbers, not hand-written prose |
+| 25 | Any statement about real-market predictability or optimizer effects on real returns | **not claimed** | script provided, no results run by the author | to be filled in only after the owner runs it |
 
 ## Explicitly not claimed
 

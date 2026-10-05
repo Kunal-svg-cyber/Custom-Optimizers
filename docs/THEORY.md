@@ -74,7 +74,7 @@ Let `G = 0.25 * sqrt(realmax)` for the working dtype. After sanitisation, every 
 
 ## 3. Cited results
 
-**Theorem (Johnson & Zhang, NeurIPS 2013, Thm 1).** Let each `f_i` be `L`-smooth and `F` be `gamma`-strongly convex. Run SVRG with step `eta < 1/(2L)` and `m` inner steps per epoch, with the SGD-form update `w <- w - eta * g_hat`, taking the next snapshot as a randomly chosen inner iterate. Then
+**Theorem (Johnson & Zhang, NeurIPS 2013, Thm 1).** Let each `f_i` be convex and `L`-smooth and `F` be `gamma`-strongly convex. Run SVRG with step `eta < 1/(2L)` and `m` inner steps per epoch, with the SGD-form update `w <- w - eta * g_hat`, taking the next snapshot as a randomly chosen inner iterate. Then
 
 ```
 E[F(w~_s) - F(w*)]  <=  alpha^s * (F(w~_0) - F(w*)),
@@ -88,8 +88,8 @@ This applies to the **non-adaptive** variants in the ablation (`svrg_momentum` w
 ### Proposition 5 (SVRG with a frozen diagonal preconditioner; explains Experiment 6)
 Let `D` be a fixed positive diagonal matrix and consider the preconditioned SVRG step
 `w <- w - eta * D^{-1} g_hat`, with `g_hat` the usual variance-reduced gradient. Define the rescaled problem
-`f~_i(u) = f_i(D^{-1/2} u)`, `F~(u) = F(D^{-1/2} u)`. Suppose each `f~_i` is `L_D`-smooth, i.e.
-`lambda_max(D^{-1/2} Hess f_i D^{-1/2}) <= L_D`, and `F~` is `gamma_D`-strongly convex. Then the Johnson–Zhang theorem
+`f~_i(u) = f_i(D^{-1/2} u)`, `F~(u) = F(D^{-1/2} u)`. Suppose each `f_i` is convex, each `f~_i` is `L_D`-smooth, i.e.
+`lambda_max(D^{-1/2} Hess f_i D^{-1/2}) <= L_D`, and `F~` is `gamma_D`-strongly convex. (Convexity of `f_i` is preserved by the linear change of variables; least squares and L2-regularised logistic loss satisfy it.) Then the Johnson–Zhang theorem
 (Section 3) applies verbatim with `(L_D, gamma_D)`:
 
 ```
@@ -102,7 +102,7 @@ alpha_D = 1 / (gamma_D * eta * (1 - 2 L_D eta) * m)  +  2 L_D eta / (1 - 2 L_D e
 **What it says.** The rate depends on the *preconditioned* condition number `kappa_D = L_D / gamma_D`. For least squares,
 `L_D = max_i ||D^{-1/2} x_i||^2` and `gamma_D = lambda_min(D^{-1/2} H D^{-1/2})` with `H = X^T X / n`. With the Jacobi choice
 `D = diag(H)`, `kappa_D` is invariant to rescaling any feature column, because `D^{-1/2} H D^{-1/2}` is the correlation matrix of the
-features. Jacobi scaling is within a factor of the dimension `d` of the best possible diagonal scaling (van der Sluis, 1969).
+features. Jacobi scaling brings the condition number of the *preconditioned Hessian* within a factor of the dimension `d` of the best possible diagonal scaling (van der Sluis, 1969); `kappa_D` itself uses the per-sample curvature `L_D = max_i ...`, so that result is a statement about the Hessian condition number, which `kappa_D` upper-bounds only up to the usual smoothness-versus-Hessian gap. Both are invariant to column scales.
 So a feature with a thousand-fold larger scale inflates the *raw* `kappa` by orders of magnitude and the preconditioned
 `kappa_D` not at all. Experiment 10 measures this: on the badly scaled problem of Experiment 6, `kappa` falls from about
 1e7 to about 80, while on equal-variance features it does not move (81 to 82). That matches Experiment 6, where adaptive scaling
@@ -122,7 +122,7 @@ not (the proposition's preconditioner does not renormalise as the gradient shrin
 1. Adam-type methods can fail to converge even on convex problems with noise-free structure when `v_t` forgets large gradients (Reddi, Kale & Kumar, ICLR 2018).
 2. Normalisation makes the step size roughly `lr` per coordinate even when gradients are tiny, which by itself prevents exact convergence at a constant `lr`, unless `v_t` retains the memory of earlier, larger gradients.
 
-Empirically (see `docs/RESULTS.md`), Coordinate SVRG at a constant rate converges far past the noise floor at which Adam with its own tuned learning rate stalls on well-scaled problems, but on a badly scaled problem it plateaus (median gap about 7e-4) exactly as difficulty (2) predicts, and a decaying learning rate removes the plateau (median gap about 4e-11, 20 seeds). This is evidence, not proof. The working explanation is that `beta2 = 0.999` gives `v_t` a memory of about 1000 steps, longer than the horizon of a run, so the effective preconditioner is close to a fixed diagonal matrix and the analysis of preconditioned SVRG applies approximately. **Conjecture:** with `beta2` close enough to 1 relative to the run length, linear convergence holds up to a horizon-dependent floor. Proving or refuting this is open; the experiments include an SVRG + momentum variant (no normalisation) precisely so the effect of the normalisation can be separated from the effect of variance reduction.
+Empirically (see `docs/RESULTS.md`), Coordinate SVRG at a constant rate converges far past the noise floor at which Adam with its own tuned learning rate stalls on well-scaled problems, but on a badly scaled problem it plateaus (median gap about 7e-4) exactly as difficulty (2) predicts, and a decaying learning rate removes the plateau (median gap about 4e-11, 20 seeds). This is evidence, not proof. A possible explanation, **not tested here**, is that `beta2 = 0.999` gives `v_t` a memory of about 1000 steps, so over a stretch of a run the preconditioner changes slowly and the analysis of preconditioned SVRG applies approximately; the runs in Experiment 1 are longer than 1000 steps, so this cannot be the whole story, and in Experiment 12 constant-rate Coordinate SVRG did not plateau at all. **Conjecture:** with `beta2` close enough to 1 relative to the run length, linear convergence holds up to a horizon-dependent floor. Proving or refuting this is open; the experiments include an SVRG + momentum variant (no normalisation) precisely so the effect of the normalisation can be separated from the effect of variance reduction.
 
 **Non-convex and deep learning.** Variance reduction is known to help far less on deep networks than on convex finite sums (Defazio & Bottou, NeurIPS 2019). Non-convex SVRG has weaker guarantees (Reddi, Hefny, Sra, Póczos & Smola, ICML 2016). This project makes no claim about deep-learning speedups; its stated regime is finite-sum, low-SNR estimation (calibration of linear/generalised-linear signal models on tick data).
 

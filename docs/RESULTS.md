@@ -567,8 +567,8 @@ logistic loss is only the L2 weight, which makes the worst-case Johnson-Zhang re
 **12. Real data: preconditioning still dominates, but the round-off result does not carry (Experiment 13).**
 On three bundled real datasets with raw, unstandardised features (breast cancer and wine as logistic regression, diabetes as least squares; feature scales span
 5.3, 3.4 and 1.8 decades), Jacobi scaling cuts the Hessian condition number at the optimum by about 1.2e2, 2.7e3 and 1.3e3. Preconditioned methods (Jacobi SVRG,
-Coordinate SVRG, Adam) beat unpreconditioned ones (SGD, SVRG + momentum) by large margins on all three. Jacobi SVRG has the lowest median gap on all three, but only
-by 0.06 to 0.52 decades over the best tuned baseline (10/10 optimizer seeds each), and on breast cancer it is indistinguishable from Coordinate SVRG with cosine decay.
+Coordinate SVRG, Adam) beat unpreconditioned ones (SGD, SVRG + momentum) by large margins on all three. Jacobi SVRG has the lowest median gap on wine and diabetes and is tied with Coordinate SVRG with cosine decay on breast cancer (6.015e-3 versus 6.005e-3), with a margin of only
+0.06 to 0.52 decades over the best tuned baseline.
 **No method reached the 1e-8 target on any dataset in 1000 epochs**: the condition number remains large (2.5e5 on breast cancer even after scaling) and the datasets are tiny.
 Caveats: three datasets cannot support a general claim; the seeds vary only the batch order, so the intervals say nothing about variation across datasets; the best learning rate for
 Adam with cosine decay on diabetes sat on the grid edge.
@@ -582,7 +582,7 @@ are deliberately hostile and measure a robustness guarantee, not typical trainin
 
 ## Limitations (read before citing any number)
 
-* **Synthetic data only.** The simulator generates what the model assumes (linear hidden signal, additive noise, jumps). Nothing here is evidence of real-market performance.
+* **Mostly synthetic data.** The simulator generates what the model assumes (linear hidden signal, additive noise, jumps). The only real data are three small non-financial datasets (Experiment 13), where the round-off results do not reproduce. Nothing here is evidence of real-market performance.
 * **Small models, modest scale.** The largest problem is `n = 40000`, `d = 200`, and a direct solve is as fast as any iterative method on it. The non-convex case is one 289-parameter network. No deep-learning results; variance reduction is known to help much less there (Defazio & Bottou, 2019).
 * **Held-out checks are limited.** Experiment 8 uses a random split for logistic regression and the network only, with learning rates tuned on training loss; Experiment 3 is out-of-sample in time but uses least squares. Nothing was tuned on validation data.
 * **Sample-gradient evaluations are not wall-clock time**, and the wall-clock figures are NumPy on one CPU core, not the PyTorch/JAX engines on a GPU.
@@ -591,11 +591,12 @@ are deliberately hostile and measure a robustness guarantee, not typical trainin
 * **The adaptive variant has no convergence proof** (see `THEORY.md`, Section 4). The cosine-decay results are empirical.
 * **Uneven seed counts** (3 evaluation seeds in Experiment 5, 8 in Experiment 7) make those intervals wide. Intervals in the main tables are interquartile ranges; the paired table has bootstrap confidence intervals over seeds. No multiple-comparison correction.
 * **Some learning rates sit on the grid edge** (marked †; SVRG + momentum in several cells, SGD in the non-convex cell). The true optimum could be somewhat better, so the SVRG + momentum versus Coordinate SVRG ordering in those cells should not be over-read.
-* **Engine validation vs experiment numbers.** The PyTorch and JAX engines pass all 58 tests on a Colab T4 runtime (and CPU CI), including step-for-step agreement with the NumPy oracle; on the GPU the PyTorch engine stayed within 1.8e-7 of the oracle over 100 steps, and a 640-step benchmark's final SVRG and Adam numbers matched the oracle to four significant digits. The experiment numbers above still come from the oracle, not from the engines, and no speed claim is made.
+* **Engine validation vs experiment numbers.** The PyTorch and JAX engines passed the full test suite (58 tests at the time) on a Colab T4 runtime (and CPU CI), including step-for-step agreement with the NumPy oracle; on the GPU the PyTorch engine stayed within 1.8e-7 of the oracle over 100 steps, and a 640-step benchmark's final SVRG and Adam numbers matched the oracle to four significant digits. The experiment numbers above still come from the oracle, not from the engines, and no speed claim is made.
 
 ## Next steps that would make the claims stronger
 
-1. Run the PyTorch engine on a GPU on a problem large enough that wall-clock favours iterative methods, and report time to target including tuning.
+1. Run a timing study of the PyTorch engine on a GPU, on a problem large enough that wall-clock could favour iterative methods, and report time to target including tuning.
+1a. Run `experiments/real_market_study.py` on real daily returns (with its placebo) and report the result, whether null or not.
 2. Re-run Experiment 8 with learning rates and stopping points tuned on validation loss.
 3. Tighten Proposition 3 (its bound is loose by orders of magnitude in practice).
 4. Attempt the conjecture in `THEORY.md` Section 4, or construct a counterexample.
