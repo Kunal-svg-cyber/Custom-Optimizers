@@ -1,4 +1,4 @@
-.PHONY: install test quick experiments tables report all
+.PHONY: install test quick experiments tables report market all
 
 install:
 	pip install -r requirements.txt
@@ -14,6 +14,9 @@ experiments:      # full run, regenerates results/ and docs/figures/ (~15 min, o
 
 tables:           # rebuild tables and figures from the stored results.json
 	python -m experiments.run_experiments --tables-only
+
+market:           # real-market walk-forward study (needs internet and yfinance)
+	python -m experiments.real_market_study --placebo
 
 report:           # rebuild paper/technical_report.pdf from results/experiments.json (needs pdflatex)
 	python paper/make_numbers.py

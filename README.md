@@ -53,6 +53,22 @@ python -m benchmarks.compare_optimizers --device cuda --wandb-mode online   # to
 
 `notebooks/colab_runner.ipynb` does all of this on a Colab T4 (edit `REPO_URL` first). `make test`, `make experiments`, `make report` wrap the same commands. A GitHub Actions workflow (`.github/workflows/tests.yml`) runs the test suite on CPU PyTorch and JAX for every push, so the engine tests run automatically once the repository is on GitHub.
 
+## Real-market study (provided; run it yourself)
+
+`experiments/real_market_study.py` runs a purged walk-forward comparison of OLS, ridge, budget-limited Adam, budget-limited
+Jacobi SVRG and 21-day momentum on daily returns of a panel of assets (Yahoo Finance via `yfinance`, your own CSVs via `--csv-dir`,
+or a synthetic stand-in via `--synthetic` for smoke tests). Safeguards: features use only past data (unit-tested), refits train only
+on rows whose targets are already known (unit-tested against look-ahead), and `--placebo` repeats the whole run on circularly
+shifted targets so that a null is visible as a null. Results come with moving-block-bootstrap intervals and net-of-cost Sharpe.
+**No real-market results are included in this repository yet**; the honest prior is that daily returns are barely predictable, so
+expect small or null differences. On the synthetic stand-in (weak genuine signal) Jacobi SVRG matched OLS and budget-limited Adam
+was worse, which shows the pipeline can tell optimizers apart when signal-to-noise is very low; that is not a market result.
+
+```bash
+pip install yfinance
+python -m experiments.real_market_study --tickers SPY QQQ IWM EFA EEM TLT GLD XLF XLE XLK --start 2008-01-01 --end 2025-12-31 --placebo
+```
+
 ## Repository layout
 
 ```
@@ -63,6 +79,7 @@ src/jax_optimizer.py              stateless JAX engine (PyTree state, jax.jit)
 src/reference_numpy.py            independent NumPy oracle + 2x2 ablation switches + frozen preconditioner
 src/preconditioning.py            Jacobi diagonals for least squares / logistic, Johnson-Zhang recipe
 tests/test_math.py                invariant tests, theory checks, engine-vs-oracle differential tests
+experiments/real_market_study.py  walk-forward study on real or synthetic returns (placebo, block bootstrap)
 experiments/run_experiments.py    fourteen experiments with paired-bootstrap statistics (NumPy; Experiment 13 needs scikit-learn)
 benchmarks/compare_optimizers.py  torch engine vs Adam / SGD, logged to Weights & Biases
 paper/technical_report.tex/.pdf   10-page report; every number is a macro generated from results/experiments.json
