@@ -41,6 +41,14 @@ Every substantive claim in this repository, the kind of support it has, where to
 | 20 | No wall-clock win over a direct solve at `n = 40000`, `d = 200` | measured | Experiment 5 | NumPy on one CPU core; tuning cost excluded |
 | 21 | No benefit for walk-forward signal tracking | measured | Experiment 3 (differences at most 0.005 in IC; SVRG never beats Adam) | simulated alpha; small problem |
 
+## Real-market study (protocol only)
+
+| # | Claim | Kind | Evidence | Limits |
+|---|---|---|---|---|
+| 22 | The walk-forward pipeline uses no future information | tested | `test_market_features_are_causal`, `test_walk_forward_predictions_have_no_lookahead` | tests use synthetic data; the live data path (`yfinance`/CSV) is not unit-tested beyond the CSV loader |
+| 23 | The pipeline detects a genuine signal and not a shifted placebo | tested | `test_signal_is_detected_and_placebo_is_not` (three seeds, strong synthetic signal) | a weak signal (strength 1.0) is detected on some seeds and not others, as expected at that signal-to-noise |
+| 24 | Any statement about real-market predictability or optimizer effects on real returns | **not claimed** | script provided, no results run by the author | to be filled in only after the owner runs it |
+
 ## Explicitly not claimed
 
 * Performance on real financial data. No market data was used.
