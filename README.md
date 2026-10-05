@@ -6,7 +6,7 @@ honest account of what the evidence does and does not show.
 
 **Start here:** [`paper/technical_report.pdf`](paper/technical_report.pdf) (10-page technical report), [`docs/CLAIMS.md`](docs/CLAIMS.md) (every claim, its evidence and its limits), [`docs/THEORY.md`](docs/THEORY.md) (what is proved, cited, open) and [`docs/RESULTS.md`](docs/RESULTS.md) (experiments and limitations).
 
-## Headline findings (synthetic testbeds; see `docs/RESULTS.md` for protocol, paired statistics and caveats)
+## Headline findings (mostly synthetic testbeds, plus one real-data row; see `docs/RESULTS.md` for protocol, paired statistics and caveats)
 
 | Finding | Evidence |
 |---|---|
@@ -18,7 +18,7 @@ honest account of what the evidence does and does not show.
 | The conditioning numbers predict where adaptive scaling helps: Jacobi scaling cuts kappa from about 1.1e7 to about 82 on badly scaled features and not at all on equal-variance features (Proposition 5, a corollary of the Johnson-Zhang theorem) | Experiment 10 |
 | **A method read off the theory**: Jacobi-preconditioned SVRG with hyper-parameters taken from the Johnson-Zhang recipe and no tuning reaches float64 round-off on 20/20 seeds of the badly scaled problem, where the best tuned adaptive variant reaches 3.5e-11 and needs 4.7x more evaluations to hit the target; measured contraction 0.08 to 0.10 per epoch against a guaranteed 0.5 | Experiment 11, Proposition 5 |
 | The Jacobi result carries to logistic regression with badly scaled features: tuned Jacobi SVRG reaches round-off on 12/12 seeds with 2.9x fewer evaluations than Coordinate SVRG with cosine decay (constant-rate Coordinate SVRG does not plateau there, so that effect is problem-dependent) | Experiment 12 |
-| Real data (breast cancer, wine, diabetes; raw features): preconditioning dominates, Jacobi SVRG is best but by only 0.06 to 0.52 decades over the best tuned baseline, and **the round-off result does not carry**: no method reached the target | Experiment 13 |
+| Real data (breast cancer, wine, diabetes; raw features): preconditioning dominates, Jacobi SVRG has the lowest median gap on two of three and ties on the third (breast cancer), by only 0.06 to 0.52 decades over the best tuned baseline, and **the round-off result does not carry**: no method reached the target | Experiment 13 |
 | Ablating invariants: misaligned batches are 2.1x worse than no variance reduction; textbook Adam fails 76% to 100% of adversarial float32 trials where the full guard set fails 0%; the gradient bound, not the denominator floor, is the operative guard | Experiment 14 |
 | Gradient variance falls about 1e15x along the trajectory while SGD variance stays flat, and stays under the proved bounds in 25/25 probes | Experiment 2, Lemma 2, Proposition 3 |
 | No wall-clock win over a direct solve at `n = 40000`, `d = 200` (normal equations 0.06 s vs SVRG 0.08 s) | Experiment 5 |
@@ -48,10 +48,10 @@ w    <- w - lr * clip( m_hat / max(sqrt(v_hat), floor), +-update_clip )
 pip install -r requirements.txt
 python -m pytest tests/ -v                       # invariants, oracle, differential and fuzz tests
 python -m experiments.run_experiments            # regenerates results/ and docs/figures/ (~30 min, CPU)
-python -m benchmarks.compare_optimizers --device cuda --wandb-mode online   # torch engine on a T4
+python -m benchmarks.compare_optimizers --device cuda --wandb-mode disabled   # torch engine on a T4 (use online after `wandb login`)
 ```
 
-`notebooks/colab_runner.ipynb` does all of this on a Colab T4 (edit `REPO_URL` first). `make test`, `make experiments`, `make report` wrap the same commands. A GitHub Actions workflow (`.github/workflows/tests.yml`) runs the test suite on CPU PyTorch and JAX for every push, so the engine tests run automatically once the repository is on GitHub.
+`notebooks/colab_runner.ipynb` does all of this on a Colab T4 (upload the zip or clone your repo, then run the cells in order). `make test`, `make experiments`, `make report` wrap the same commands. A GitHub Actions workflow (`.github/workflows/tests.yml`) runs the test suite on CPU PyTorch and JAX for every push, so the engine tests run automatically once the repository is on GitHub.
 
 ## Real-market study (provided; run it yourself)
 
@@ -92,7 +92,7 @@ results/                          raw JSON + tables from the last run
 
 ## Validation status
 
-* **Google Colab (T4 GPU), run by the repository owner:** all **58 tests passed** (106 s), including every PyTorch and JAX engine test, the step-for-step differential tests against the NumPy oracle, the frozen-preconditioner tests and the fuzz tests.
+* **Google Colab (T4 GPU), run by the repository owner:** the full suite passed (**58 tests at the time**, 106 s; the five tests added later for the real-market study have not yet been run there), including every PyTorch and JAX engine test, the step-for-step differential tests against the NumPy oracle, the frozen-preconditioner tests and the fuzz tests.
 * **GPU engine against the oracle:** the PyTorch engine running on the T4 stayed within **1.8e-7** of the NumPy reference over 100 steps (float32).
 * **GPU benchmark against the oracle:** a 640-step benchmark on the T4 produced final SVRG numbers (loss gap 1.343e-7, distance to optimum 5.089e-4) and Adam numbers (2.016e-2, 0.2009) that the NumPy oracle reproduces to four significant digits with identical settings. (The benchmark compares methods at equal *steps*, not equal gradient budgets; it is a correctness check, not the evidence behind the headline findings.)
 * An earlier GitHub Actions run (Python 3.10 log) passed 44 of 45 tests; the one failure was a wrong assertion in the torch fuzz test, since corrected. Frozen-preconditioner tests were added afterwards; they passed on Colab, and a fresh CI run will confirm on Python 3.10 and 3.12.
