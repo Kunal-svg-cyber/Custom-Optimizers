@@ -559,6 +559,100 @@ def test_naive_adam_fails_where_the_reference_engine_does_not() -> None:
     assert failures > 20                                   # the textbook update breaks on hostile inputs
 
 
+def test_market_features_are_causal() -> None:
+    """Features on day t must not change if any later price or volume changes."""
+    from experiments.real_market_study import build_features, synthetic_panel
+
+    close, volume = synthetic_panel("signal", 6, 400, 0)
+    feats, _ = build_features(close, volume)
+    t = 250
+    close2, volume2 = close.copy(), volume.copy()
+    rng = np.random.default_rng(9)
+    close2[t + 1:] *= rng.uniform(0.5, 2.0, size=close2[t + 1:].shape)
+    volume2[t + 1:] *= rng.uniform(0.1, 10.0, size=volume2[t + 1:].shape)
+    feats2, _ = build_features(close2, volume2)
+    assert np.allclose(feats[: t + 1], feats2[: t + 1], equal_nan=True)
+    truncated, _ = build_features(close[: t + 1], volume[: t + 1])
+    assert np.allclose(truncated, feats[: t + 1], equal_nan=True)
+
+
+def test_walk_forward_predictions_have_no_lookahead() -> None:
+    """Predictions for blocks inside a short history must equal those made with extra future data."""
+    from experiments.real_market_study import (
+        METHODS, build_features, synthetic_panel, walk_forward_predictions,
+    )
+
+    close, volume = synthetic_panel("signal", 8, 700, 1)
+    feats_full, target_full = build_features(close, volume)
+    short = 520
+    feats_short, target_short = build_features(close[:short], volume[:short])
+    kwargs = dict(window=252, horizon=21, budget_epochs=2.0, batch=64, seed=0)
+    full = walk_forward_predictions(feats_full, target_full, **kwargs)
+    part = walk_forward_predictions(feats_short, target_short, **kwargs)
+    limit = short - 1 - 21
+    compared = 0
+    for name in METHODS:
+        a, b = full[name][:limit], part[name][:limit]
+        assert np.allclose(a, b, equal_nan=True), name
+        compared += int(np.isfinite(b).sum())
+    assert compared > 0                                     # the comparison covered real predictions
+
+
+def test_signal_is_detected_and_placebo_is_not() -> None:
+    """With a clearly detectable synthetic signal the pipeline finds it on every seed; shifted targets do not."""
+    from experiments.real_market_study import (
+        build_features, placebo_target, summarise, synthetic_panel, walk_forward_predictions,
+    )
+
+    real, null = [], []
+    for seed in (3, 4, 5):
+        close, volume = synthetic_panel("signal", 10, 1800, seed, strength=3.0)
+        feats, target = build_features(close, volume)
+        preds = walk_forward_predictions(feats, target, window=504, horizon=21, budget_epochs=2.0, batch=64, seed=0)
+        real.append(summarise(preds, target, cost_bps=5.0, seed=0)["table"]["ols"]["mean_daily_ic"])
+        null.append(summarise(preds, placebo_target(target, 7), cost_bps=5.0, seed=0)["table"]["ols"]["mean_daily_ic"])
+    assert min(real) > 0.05                                 # detected on every seed
+    assert max(abs(x) for x in null) < 0.03                 # circularly shifted targets: no signal
+
+
+def test_placebo_target_preserves_marginals_and_bootstrap_pairing() -> None:
+    from experiments.real_market_study import paired_block_bootstrap, placebo_target
+
+    rng = np.random.default_rng(0)
+    target = rng.standard_normal((300, 4))
+    shifted = placebo_target(target, 1)
+    assert np.allclose(np.sort(target, axis=0), np.sort(shifted, axis=0))
+    assert not np.allclose(target, shifted)
+    series = {"a": rng.standard_normal(400), "b": None}
+    series["b"] = series["a"].copy()
+    est, lo, hi = paired_block_bootstrap(series, "a", "b", lambda v: float(np.mean(v)), draws=200)
+    assert est == 0.0 and lo == 0.0 and hi == 0.0           # identical series: zero difference, zero width
+    series["b"] = series["a"] - 0.5
+    est, lo, hi = paired_block_bootstrap(series, "a", "b", lambda v: float(np.mean(v)), draws=200)
+    assert abs(est - 0.5) < 1e-12 and lo > 0.45 and hi < 0.55
+
+
+def test_csv_panel_loader_aligns_on_common_dates() -> None:
+    import csv
+    import tempfile
+
+    from experiments.real_market_study import load_csv_panel, synthetic_panel
+
+    close, volume = synthetic_panel("null", 6, 120, 0)
+    with tempfile.TemporaryDirectory() as directory:
+        for j in range(6):
+            first = 5 if j == 0 else 0                       # asset 0 starts later: common dates shrink
+            with open(Path(directory) / f"A{j}.csv", "w", newline="", encoding="utf-8") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["Date", "Close", "Adj Close", "Volume"])
+                for t in range(first, 120):
+                    writer.writerow([f"2020-{1 + t // 28:02d}-{1 + t % 28:02d}", 0.0, close[t, j], volume[t, j]])
+        names, loaded_close, loaded_volume = load_csv_panel(Path(directory))
+    assert names == [f"A{j}" for j in range(6)]
+    assert loaded_close.shape == (115, 6) and loaded_volume.shape == (115, 6)
+    assert np.allclose(loaded_close[:, 1], close[5:, 1])      # Adj Close is preferred over Close
+
+
 def test_least_squares_gap_matches_loss_difference() -> None:
     from experiments.run_experiments import LeastSquares
 
