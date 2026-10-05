@@ -50,7 +50,7 @@ def best_baseline(variants: Dict[str, Any]) -> str:
     return min(BASELINES, key=lambda b: variants[b]["final_gap_median"])
 
 
-def main() -> None:
+def main(check: bool = False) -> None:
     r: Dict[str, Any] = json.loads((REPO_ROOT / "results" / "experiments.json").read_text(encoding="utf-8"))
     macros: Dict[str, str] = {}
 
@@ -238,7 +238,7 @@ def main() -> None:
     macros["ExpThreeIQR"] = f"{float(np.median(spread)):.2f}"
 
     lines = [r"\newcommand{\%s}{%s}" % (k, v) for k, v in macros.items()]
-    (REPO_ROOT / "paper" / "numbers.tex").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    numbers_text: str = "\n".join(lines) + "\n"
 
     # ---- tables ----
     def table(key: str, regime: str, caption: str, label: str) -> str:
@@ -276,18 +276,30 @@ def main() -> None:
            r"\caption{Real datasets with raw, unstandardised features (plus an intercept): median final loss gap after 1000 epochs of sample-gradient evaluations, learning rates tuned per method. No method reached the $10^{-8}$ target on any dataset.}",
            r"\label{tab:real}", r"\end{table}"]
     tables = [
-        "\n".join(jt),
-        "\n".join(rt),
         table("ablation", "volatile",
               r"Least squares, volatile regime. Median final loss gap and sample-gradient evaluations to reach $10^{-8}$ of the initial gap, held-out seeds. $\dagger$: best learning rate on the edge of the grid.",
               "tab:ls"),
         table("hetero", "volatile",
               r"Least squares with feature scales spread over three decades. Same protocol as Table~\ref{tab:ls}.",
               "tab:hetero"),
+        "\n".join(jt),
+        "\n".join(rt),
     ]
-    (REPO_ROOT / "paper" / "generated_tables.tex").write_text("\n\n".join(tables) + "\n", encoding="utf-8")
+    tables_text: str = "\n\n".join(tables) + "\n"
+    numbers_path = REPO_ROOT / "paper" / "numbers.tex"
+    tables_path = REPO_ROOT / "paper" / "generated_tables.tex"
+    if check:
+        stale = [p.name for p, text in ((numbers_path, numbers_text), (tables_path, tables_text))
+                 if not p.exists() or p.read_text(encoding="utf-8") != text]
+        if stale:
+            print(f"STALE: {', '.join(stale)} do not match results/experiments.json; run python paper/make_numbers.py")
+            raise SystemExit(1)
+        print(f"ok: {len(macros)} macros and {len(tables)} tables are in sync with results/experiments.json")
+        return
+    numbers_path.write_text(numbers_text, encoding="utf-8")
+    tables_path.write_text(tables_text, encoding="utf-8")
     print(f"wrote {len(macros)} macros and {len(tables)} tables")
 
 
 if __name__ == "__main__":
-    main()
+    main(check="--check" in sys.argv[1:])
