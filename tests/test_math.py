@@ -664,9 +664,10 @@ def test_report_numbers_are_in_sync_with_stored_results_and_macros_are_defined()
     )
     assert check.returncode == 0, check.stdout + check.stderr
     defined = set(re.findall(r"\\newcommand\{\\(\w+)\}", (REPO_ROOT / "paper" / "numbers.tex").read_text(encoding="utf-8")))
-    used = set(re.findall(r"\\(Exp[A-Za-z]+)", (REPO_ROOT / "paper" / "technical_report.tex").read_text(encoding="utf-8")))
-    assert used, "report uses no generated macros"
-    assert used <= defined, f"undefined macros in the report: {sorted(used - defined)}"
+    for name in ("technical_report.tex", "one_page_summary.tex"):
+        used = set(re.findall(r"\\(Exp[A-Za-z]+)", (REPO_ROOT / "paper" / name).read_text(encoding="utf-8")))
+        assert used, f"{name} uses no generated macros"
+        assert used <= defined, f"undefined macros in {name}: {sorted(used - defined)}"
 
 
 def test_least_squares_gap_matches_loss_difference() -> None:
