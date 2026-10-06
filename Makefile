@@ -21,5 +21,6 @@ market:           # real-market walk-forward study (needs internet and yfinance)
 report:           # rebuild paper/technical_report.pdf from results/experiments.json (needs pdflatex)
 	python paper/make_numbers.py
 	cd paper && pdflatex -interaction=nonstopmode technical_report.tex && pdflatex -interaction=nonstopmode technical_report.tex
+	cd paper && pdflatex -interaction=nonstopmode one_page_summary.tex && pdflatex -interaction=nonstopmode one_page_summary.tex
 
 all: test experiments report

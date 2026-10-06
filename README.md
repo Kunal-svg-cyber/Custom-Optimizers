@@ -4,7 +4,7 @@ A from-scratch variance-reduced optimizer with adaptive coordinate scaling, in t
 validated against an independent NumPy oracle, with a written theory note, a tuned ablation, and an
 honest account of what the evidence does and does not show.
 
-**Start here:** [`paper/technical_report.pdf`](paper/technical_report.pdf) (10-page technical report), [`docs/CLAIMS.md`](docs/CLAIMS.md) (every claim, its evidence and its limits), [`docs/THEORY.md`](docs/THEORY.md) (what is proved, cited, open) and [`docs/RESULTS.md`](docs/RESULTS.md) (experiments and limitations).
+**Start here:** [`paper/one_page_summary.pdf`](paper/one_page_summary.pdf) (one page), [`paper/technical_report.pdf`](paper/technical_report.pdf) (10-page technical report), [`docs/CLAIMS.md`](docs/CLAIMS.md) (every claim, its evidence and its limits), [`docs/THEORY.md`](docs/THEORY.md) (what is proved, cited, open) and [`docs/RESULTS.md`](docs/RESULTS.md) (experiments and limitations).
 
 ## Headline findings (mostly synthetic testbeds, plus one real-data row; see `docs/RESULTS.md` for protocol, paired statistics and caveats)
 
@@ -83,8 +83,12 @@ experiments/real_market_study.py  walk-forward study on real or synthetic return
 experiments/run_experiments.py    fourteen experiments with paired-bootstrap statistics (NumPy; Experiment 13 needs scikit-learn)
 benchmarks/compare_optimizers.py  torch engine vs Adam / SGD, logged to Weights & Biases
 paper/technical_report.tex/.pdf   10-page report; every number is a macro generated from results/experiments.json
-paper/make_numbers.py             results JSON -> LaTeX macros and tables
+paper/one_page_summary.tex/.pdf   one-page summary (same generated numbers)
+paper/make_numbers.py             results JSON -> LaTeX macros and tables (--check verifies sync)
 docs/CLAIMS.md                    claim -> kind of support -> evidence -> limits
+docs/REVIEWER_FAQ.md              twelve sceptical questions with honest answers
+CHANGELOG.md                      additions and, above all, corrections
+results/ENVIRONMENT.txt           software versions that produced results/
 docs/THEORY.md                    lemmas with proofs, cited theorem, open questions
 docs/RESULTS.md                   tables, figures, interpretation, limitations
 results/                          raw JSON + tables from the last run
