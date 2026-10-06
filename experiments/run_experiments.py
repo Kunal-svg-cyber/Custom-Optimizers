@@ -2020,6 +2020,20 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
+def write_environment(out_dir: Path) -> None:
+    """Record the software versions that produced a results directory."""
+    import platform
+
+    lines: List[str] = [f"python {platform.python_version()} on {platform.platform()}", f"numpy {np.__version__}"]
+    for name in ("scipy", "sklearn", "matplotlib", "yaml"):
+        try:
+            module = __import__(name)
+            lines.append(f"{name} {getattr(module, '__version__', 'unknown')}")
+        except ImportError:
+            lines.append(f"{name} not installed")
+    (out_dir / "ENVIRONMENT.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default=str(REPO_ROOT / "configs" / "stochastic_regime.yaml"))
@@ -2181,6 +2195,7 @@ def main() -> None:
         merged.update(results)
         results = merged
     results_path.write_text(json.dumps(results, indent=1), encoding="utf-8")
+    write_environment(out_dir)
     write_tables(results, out_dir / "tables.md")
     figures: List[str] = make_figures(results, Path(args.figures))
     print(f"done in {time.time() - started:.0f}s -> {out_dir}/experiments.json, tables.md, {len(figures)} figure(s)")
