@@ -47,7 +47,7 @@ Every substantive claim in this repository, the kind of support it has, where to
 |---|---|---|---|---|
 | 22 | The walk-forward pipeline uses no future information | tested | `test_market_features_are_causal`, `test_walk_forward_predictions_have_no_lookahead` | tests use synthetic data; the live data path (`yfinance`/CSV) is not unit-tested beyond the CSV loader |
 | 23 | The pipeline detects a genuine signal and not a shifted placebo | tested | `test_signal_is_detected_and_placebo_is_not` (three seeds, strong synthetic signal) | a weak signal (strength 1.0) is detected on some seeds and not others, as expected at that signal-to-noise |
-| 24 | The numbers in the report are exactly those in `results/experiments.json`, and the report references no undefined number | tested | `test_report_numbers_are_in_sync_*`; `python paper/make_numbers.py --check` | covers generated numbers, not hand-written prose |
+| 24 | The numbers in the report and the one-page summary are exactly those in `results/experiments.json`, and the report references no undefined number | tested | `test_report_numbers_are_in_sync_*`; `python paper/make_numbers.py --check` | covers generated numbers, not hand-written prose |
 | 25 | Any statement about real-market predictability or optimizer effects on real returns | **not claimed** | script provided, no results run by the author | to be filled in only after the owner runs it |
 
 ## Explicitly not claimed
