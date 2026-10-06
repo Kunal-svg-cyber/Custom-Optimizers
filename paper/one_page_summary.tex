@@ -1,0 +1,57 @@
+\documentclass[10pt]{article}
+\usepackage[margin=0.65in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\input{numbers.tex}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+\setlist{nosep,leftmargin=*}
+\pagestyle{empty}
+
+\begin{document}
+{\Large\bfseries Coordinate-wise SVRG for low signal-to-noise objectives}\hfill{\small Kunal}\\[1pt]
+{\small One-page summary. Full details: \texttt{paper/technical\_report.pdf}; every claim and its limits: \texttt{docs/CLAIMS.md}.}
+
+\textbf{What it is.} A variance-reduced optimizer with adaptive coordinate scaling, implemented in PyTorch and JAX, verified against an independent NumPy oracle, and studied on noisy finite-sum problems built to resemble tick data. The emphasis is on honest evidence: tuned baselines, held-out seeds, paired bootstrap intervals, and negative results reported as such.
+
+\textbf{Contributions.}
+\begin{enumerate}
+\item \textbf{Three implementations that agree.} PyTorch, JAX and a NumPy oracle follow the same update rule, checked step for step by automated tests (including adversarial-input fuzzing); on a Colab T4 the PyTorch engine stayed within $1.8\times10^{-7}$ of the oracle over 100 steps.
+\item \textbf{Short proofs.} Unbiasedness and a variance bound for the control-variate gradient; a staleness bound valid for the clipped adaptive engine; a numerical-safety property; and a corollary of the Johnson--Zhang theorem that ties SVRG's rate to the \emph{preconditioned} condition number.
+\item \textbf{A prediction from the theory, tested.} Jacobi-preconditioned SVRG with hyper-parameters read off the theorem and \emph{no tuning} reached float64 round-off on \ExpElevenBadWins{} seeds of a badly scaled problem, needing \ExpElevenSpeedup$\times$ fewer gradient evaluations than the project's own adaptive engine, with measured per-epoch contraction \ExpElevenContractionBad{} against the guaranteed \ExpElevenAlpha.
+\item \textbf{Fourteen experiments} against learning-rate-tuned Adam and SGD with momentum (constant and cosine-decay), plus ablations of the engine's invariants.
+\end{enumerate}
+
+\textbf{Results at a glance} (synthetic data unless stated).
+\begin{center}\small
+\begin{tabular}{@{}p{0.62\linewidth}p{0.33\linewidth}@{}}
+\toprule
+Finding & Evidence \\
+\midrule
+Variance reduction beats the best tuned baselines on well-scaled convex problems & \ExpOneWins{} (least squares), \ExpFourWins{} (logistic) seeds \\
+Condition number of badly scaled features after Jacobi scaling & $\ExpTenBadRaw\to\ExpTenBadJacobi$ \\
+Misaligned batches versus plain SGD (estimator error) & \ExpFourteenRatio$\times$ \emph{worse} \\
+Textbook Adam on adversarial float32 inputs (extreme but finite) & fails in \ExpFourteenNaiveFinite\% of trials; full guard set \ExpFourteenFullFinite\% \\
+Snapshot-interval sensitivity & within \ExpNineMidFactor$\times$ of best for $16\le K\le256$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{What did not work, stated plainly.}
+\begin{itemize}
+\item \textbf{Real data:} on three small real datasets with raw features, preconditioning still dominates but the round-off result does \emph{not} carry and no method reached the target; the margin of Jacobi SVRG over the best tuned baseline is only \ExpThirteenMinDiff--\ExpThirteenMaxDiff{} decades.
+\item \textbf{No wall-clock win} over a direct solve at $n=\ExpFiveN$, $d=\ExpFiveD$ (normal equations \ExpFiveNormalSeconds\,s, SVRG \ExpFiveSvrgSeconds\,s); \textbf{no benefit} for walk-forward signal tracking (IC differences at most \ExpThreeMaxICDiff).
+\item \textbf{Non-convex network:} sharper stationarity but \emph{worse} held-out loss; the adaptive engine has \textbf{no convergence proof}; \textbf{no market data} was used.
+\end{itemize}
+
+\textbf{Corrections made along the way} (logged in \texttt{CHANGELOG.md}): a claimed benefit of clamping over additive $\varepsilon$ was retracted after an ablation; a ``best on all datasets'' statement was corrected to a tie; a missing convexity hypothesis was added to a theorem statement.
+
+\textbf{Verify it yourself.}
+\begin{itemize}
+\item Tests: \texttt{pip install -r requirements.txt \&\& python -m pytest}
+\item All experiments: \texttt{python -m experiments.run\_experiments}
+\item Report numbers match stored results: \texttt{python paper/make\_numbers.py --check}
+\end{itemize}
+\end{document}
