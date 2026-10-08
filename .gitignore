@@ -1,6 +1,31 @@
+# Python
 __pycache__/
 *.pyc
 .pytest_cache/
-wandb/
 .venv/
+venv/
 *.egg-info/
+.ipynb_checkpoints/
+
+# Secrets and local config: never commit these
+.env
+*.env
+.netrc
+
+# Experiment trackers and local logs
+wandb/
+
+# LaTeX build files (the finished PDFs in paper/ ARE committed)
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+
+# Archives and OS files
+*.zip
+.DS_Store
+
+# Outputs of runs you do yourself: uncomment to keep them out of the repo
+# results/real_market/
+# results/timing/

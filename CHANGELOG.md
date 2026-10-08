@@ -15,6 +15,8 @@ changed as the evidence came in.
 | Engine validation | The engines were described as never executed | Updated after the first CI run (44 of 45) and the Colab run (all tests, GPU within 1.8e-7 of the oracle) | CI and Colab output |
 | Torch fuzz test | Asserted every stored state row was finite | The engine guarantees finite weights and moments; stored snapshot rows keep their inputs verbatim; assertion corrected | first CI run |
 | Report abstract | "All data are synthetic" | Three small real datasets were added; wording corrected | proofreading the report |
+| Real-data conclusion | "The round-off result does not carry to real data" (Experiment 13) | It carries once the features are standardised; the shortfall was raw-scale conditioning, not real-data difficulty | Experiment 16, prompted by an external audit |
+| Source of the held-out deficit | Attributed to the optimizer's precision (Experiment 8) | With validation-tuned rates it shrinks and tracks adaptive scaling (Adam is also worse than SGD); SVRG + momentum ties the best baseline | Experiment 15, prompted by an external audit |
 
 ## Additions, in order
 
@@ -27,9 +29,11 @@ changed as the evidence came in.
 7. Technical report, claims-to-evidence map, one-page summary, CI workflow, Colab notebook.
 8. Real-market walk-forward study script with placebo and block bootstrap (provided; no results yet).
 9. Report-number consistency check (`python paper/make_numbers.py --check`).
+10. External-audit response (`docs/AUDIT_RESPONSE.md`); validation-tuned held-out experiment (15); standardised real-data experiment (16); closure-determinism checker; GPU timing-study script (provided, not run); deployment notes.
 
 ## Known open items
 
 * No market data has been analysed; run `experiments/real_market_study.py` and report the result.
-* No timing study of the PyTorch engine; the Colab run established agreement with the oracle, not speed.
+* No timing study of the PyTorch engine; the Colab run established agreement with the oracle, not speed. `benchmarks/timing_study.py` is provided but has not been run.
+* The new closure-determinism test and the frozen-preconditioner tests have not yet been confirmed by CI.
 * No convergence proof for the adaptive engine.

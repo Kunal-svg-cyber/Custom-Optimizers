@@ -12,13 +12,14 @@ honest account of what the evidence does and does not show.
 |---|---|
 | On well-scaled convex problems, variance reduction dominates: SVRG variants reach float64 round-off and win against the best tuned Adam / SGD-momentum (constant and cosine-decay lr) on 20/20 (least squares) and 12/12 (logistic) held-out seeds in every noise regime | Experiments 1, 4 |
 | Adaptive scaling is conditional: it helps on badly scaled features (1.5 decades better than SVRG + momentum, 95% CI [-2.0, -1.1], 20/20 seeds) and hurts on a larger well-scaled problem. With variance reduction and lr decay it beats tuned Adam + cosine by 5.3 decades there | Experiments 5, 6 |
-| Non-convex network: SVRG reaches a sharper stationary point (1.3 decades smaller gradient norm, 8/8 seeds), but on held-out data the adaptive variants generalise *worse* (+0.0135 test loss, CI [+0.0106, +0.0150]); optimisation precision is not the lever on a noisy fit | Experiments 7, 8 |
+| Non-convex network, learning rates tuned on training loss: SVRG reaches a sharper stationary point (1.3 decades smaller gradient norm, 8/8 seeds), but on held-out data the adaptive variants generalise worse (+0.0135 test loss, CI [+0.0106, +0.0150]); see Experiment 15 below for what that deficit is attributable to | Experiments 7, 8 |
 | Held-out logistic regression: all methods are indistinguishable (test log-loss 0.68775 to 0.68776, ~54% accuracy) | Experiment 8 |
 | Snapshot interval: broad optimum (any K from 16 to 256 within about 2x of the best); Proposition 3 holds at every K but is loose by 3 to 7 orders of magnitude | Experiment 9 |
 | The conditioning numbers predict where adaptive scaling helps: Jacobi scaling cuts kappa from about 1.1e7 to about 82 on badly scaled features and not at all on equal-variance features (Proposition 5, a corollary of the Johnson-Zhang theorem) | Experiment 10 |
 | **A method read off the theory**: Jacobi-preconditioned SVRG with hyper-parameters taken from the Johnson-Zhang recipe and no tuning reaches float64 round-off on 20/20 seeds of the badly scaled problem, where the best tuned adaptive variant reaches 3.5e-11 and needs 4.7x more evaluations to hit the target; measured contraction 0.08 to 0.10 per epoch against a guaranteed 0.5 | Experiment 11, Proposition 5 |
 | The Jacobi result carries to logistic regression with badly scaled features: tuned Jacobi SVRG reaches round-off on 12/12 seeds with 2.9x fewer evaluations than Coordinate SVRG with cosine decay (constant-rate Coordinate SVRG does not plateau there, so that effect is problem-dependent) | Experiment 12 |
-| Real data (breast cancer, wine, diabetes; raw features): preconditioning dominates, Jacobi SVRG has the lowest median gap on two of three and ties on the third (breast cancer), by only 0.06 to 0.52 decades over the best tuned baseline, and **the round-off result does not carry**: no method reached the target | Experiment 13 |
+| Real data (breast cancer, wine, diabetes), raw features: preconditioning dominates but **no method reaches the target** (Hessian condition numbers 1e7). **Standardised, the round-off result reproduces** (SVRG variants at 1e-20 to 1e-31, best baselines 6e-8 to 2e-2): the shortfall was raw-scale conditioning, not 'dirty data' | Experiments 13, 16 |
+| Non-convex network, validation-tuned learning rates: held-out deficit of Coordinate SVRG shrinks to +0.0038; SVRG + momentum ties the best baseline; Adam is worse than SGD, so the deficit tracks adaptive scaling, not variance reduction | Experiment 15 |
 | Ablating invariants: misaligned batches are 2.1x worse than no variance reduction; textbook Adam fails 76% to 100% of adversarial float32 trials where the full guard set fails 0%; the gradient bound, not the denominator floor, is the operative guard | Experiment 14 |
 | Gradient variance falls about 1e15x along the trajectory while SGD variance stays flat, and stays under the proved bounds in 25/25 probes | Experiment 2, Lemma 2, Proposition 3 |
 | No wall-clock win over a direct solve at `n = 40000`, `d = 200` (normal equations 0.06 s vs SVRG 0.08 s) | Experiment 5 |
@@ -47,11 +48,18 @@ w    <- w - lr * clip( m_hat / max(sqrt(v_hat), floor), +-update_clip )
 ```bash
 pip install -r requirements.txt
 python -m pytest tests/ -v                       # invariants, oracle, differential and fuzz tests
-python -m experiments.run_experiments            # regenerates results/ and docs/figures/ (~30 min, CPU)
+python -m experiments.run_experiments            # regenerates results/ and docs/figures/ (~40 min, CPU)
 python -m benchmarks.compare_optimizers --device cuda --wandb-mode disabled   # torch engine on a T4 (use online after `wandb login`)
 ```
 
 `notebooks/colab_runner.ipynb` does all of this on a Colab T4 (upload the zip or clone your repo, then run the cells in order). `make test`, `make experiments`, `make report` wrap the same commands. A GitHub Actions workflow (`.github/workflows/tests.yml`) runs the test suite on CPU PyTorch and JAX for every push, so the engine tests run automatically once the repository is on GitHub.
+
+## Deployment notes and known constraints
+
+* **Memory.** The PyTorch engine keeps the flat parameters (N), a (4, N) state block (snapshot, full gradient, both moments) and a (3, N) scratch block: about **8N floats**, plus a transient gradient, versus roughly 4N for Adam including gradients. That is about twice Adam's footprint. It is not intended for models with billions of parameters, and variance reduction is known to help little in deep learning anyway; the target regime is linear and generalised-linear models.
+* **Host synchronisation.** `telemetry=True` (the default) reads values back to the host every step. The 2 ms step time measured on a T4 was with telemetry on, on a 32-parameter problem; closures and the update itself do not force synchronisation. Use `telemetry=False` for speed. `benchmarks/timing_study.py` measures both (provided, to be run on a GPU).
+* **Sample alignment.** The engine passes the same batch id to the live and snapshot evaluations, but the PyTorch closure must itself be a pure function of that id (no shuffling loader, dropout or stateful counter). `opt.verify_closure_determinism(closure)` checks this. The JAX engine receives the batch object itself, so it cannot misalign.
+* **Wall-clock.** No wall-clock win over a direct solve was found at the sizes tested (NumPy, one CPU core). Larger GPU sizes are untested; see `benchmarks/timing_study.py`.
 
 ## Real-market study (provided; run it yourself)
 
@@ -80,13 +88,15 @@ src/reference_numpy.py            independent NumPy oracle + 2x2 ablation switch
 src/preconditioning.py            Jacobi diagonals for least squares / logistic, Johnson-Zhang recipe
 tests/test_math.py                invariant tests, theory checks, engine-vs-oracle differential tests
 experiments/real_market_study.py  walk-forward study on real or synthetic returns (placebo, block bootstrap)
-experiments/run_experiments.py    fourteen experiments with paired-bootstrap statistics (NumPy; Experiment 13 needs scikit-learn)
+experiments/run_experiments.py    sixteen experiments with paired-bootstrap statistics (NumPy; Experiments 13 and 16 need scikit-learn)
 benchmarks/compare_optimizers.py  torch engine vs Adam / SGD, logged to Weights & Biases
+benchmarks/timing_study.py        GPU wall-clock, memory and telemetry-overhead study (provided; run on a GPU)
 paper/technical_report.tex/.pdf   10-page report; every number is a macro generated from results/experiments.json
 paper/one_page_summary.tex/.pdf   one-page summary (same generated numbers)
 paper/make_numbers.py             results JSON -> LaTeX macros and tables (--check verifies sync)
 docs/CLAIMS.md                    claim -> kind of support -> evidence -> limits
-docs/REVIEWER_FAQ.md              twelve sceptical questions with honest answers
+docs/REVIEWER_FAQ.md              fourteen sceptical questions with honest answers
+docs/AUDIT_RESPONSE.md            point-by-point response to an external critique: fair, overstated, or wrong, and what was done
 CHANGELOG.md                      additions and, above all, corrections
 results/ENVIRONMENT.txt           software versions that produced results/
 docs/THEORY.md                    lemmas with proofs, cited theorem, open questions
