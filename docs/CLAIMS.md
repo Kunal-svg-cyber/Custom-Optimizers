@@ -36,10 +36,18 @@ Every substantive claim in this repository, the kind of support it has, where to
 | 15 | A method with theory-prescribed hyper-parameters (Jacobi SVRG, no tuning) beats the best tuned adaptive variant on badly scaled least squares | measured | Experiment 11 (20/20 seeds; 4.7x fewer evaluations) | needs the Hessian diagonal; one extra data pass not charged |
 | 16 | The Jacobi result carries to logistic regression with bad scaling | measured | Experiment 12 (12/12 seeds; tuned, not theory-prescribed) | synthetic; constant-rate Coordinate SVRG does not plateau there, so that effect is problem-dependent |
 | 17 | On three real datasets with raw features, preconditioned methods dominate unpreconditioned ones; Jacobi SVRG has the lowest median gap on wine and diabetes and ties with Coordinate SVRG (cosine) on breast cancer, by only 0.06 to 0.52 decades over the best tuned baseline | measured | Experiment 13 | three small non-financial datasets; seeds vary batch order only; no method reached the target; one baseline learning rate on the grid edge |
-| 18 | The round-off result does **not** carry to the real datasets | measured | Experiment 13 | |
-| 19 | Non-convex network: SVRG reaches a sharper stationary point but generalises worse | measured | Experiments 7, 8 | one small network; learning rates tuned on training loss |
+| 18 | The round-off result does not carry to the real datasets with raw features, but it does once the features are standardised (SVRG variants at 1e-20 to 1e-31, best baselines 6e-8 to 2e-2): the shortfall was raw-scale conditioning, not real-data difficulty | measured | Experiments 13 and 16 | three small datasets; collinearity remains but is moderate; on standardised features Jacobi scaling is near the identity and has no advantage over SVRG + momentum |
+| 19 | Non-convex network: SVRG reaches a sharper stationary point; the held-out deficit seen with training-loss tuning shrinks under validation-loss tuning and tracks adaptive scaling (Adam also worse than SGD), not variance reduction (SVRG + momentum ties the best baseline) | measured | Experiments 7, 8, 15 | one small network; sharp-versus-flat minima not measured |
 | 20 | No wall-clock win over a direct solve at `n = 40000`, `d = 200` | measured | Experiment 5 | NumPy on one CPU core; tuning cost excluded |
 | 21 | No benefit for walk-forward signal tracking | measured | Experiment 3 (differences at most 0.005 in IC; SVRG never beats Adam) | simulated alpha; small problem |
+
+## Engineering constraints
+
+| # | Claim | Kind | Evidence | Limits |
+|---|---|---|---|---|
+| 26 | A non-deterministic closure can be detected before training | tested (test written, first run pending) | `test_torch_verify_closure_determinism_*` | PyTorch only; the JAX engine cannot misalign because it receives the batch itself |
+| 27 | The PyTorch engine uses about 8N floats (parameters, a (4, N) state block, a (3, N) scratch block) versus roughly 4N for Adam including gradients | stated from the code | `src/torch_optimizer.py` (`_FlatBlock`) | peak memory not yet measured; `timing_study.py` reports it |
+| 28 | Telemetry-on versus telemetry-off step cost; GPU wall-clock versus direct solves | **not claimed** | `benchmarks/timing_study.py` provided, not run | to be filled in after a GPU run |
 
 ## Real-market study (protocol only)
 

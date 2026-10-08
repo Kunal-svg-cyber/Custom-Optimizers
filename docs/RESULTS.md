@@ -1,6 +1,6 @@
 # Results
 
-All numbers are produced by `python -m experiments.run_experiments` (about 30 minutes on one CPU core, NumPy only; Experiment 13 needs scikit-learn)
+All numbers are produced by `python -m experiments.run_experiments` (about 40 minutes on one CPU core, NumPy only; Experiments 13 and 16 need scikit-learn)
 and stored in `results/experiments.json`. They use the NumPy reference implementation (`src/reference_numpy.py`),
 which the PyTorch and JAX engines are tested against step for step.
 **The PyTorch/JAX engines did not produce these numbers.** Figures are in `docs/figures/`.
@@ -11,7 +11,7 @@ gradients and every full-gradient snapshot pass. Baselines include a cosine-deca
 constant-step baseline is a weak comparison for a method whose selling point is convergence at a constant step.
 Cosine-decay runs are tied to the budget (the rate reaches zero exactly at the end), so their mid-run curves are not
 comparable with constant-rate curves; compare final values. Seeds: Exp 1 and 6 use 2 tuning / 20 evaluation seeds, Exp 4
-uses 1 / 12, Exp 5 uses 1 / 3, Exp 7 uses 2 / 8, Exp 3 uses 20, Exp 8 uses 8 fresh datasets, Exp 9 uses 2 / 6, Exp 10 uses 5 datasets, Exp 11 uses 2 / 20 (same datasets as Exp 1 and 6), Exp 12 uses 1 / 12, Exp 13 uses 2 tuning / 10 evaluation optimizer seeds on fixed data, Exp 14 uses 2,000 adversarial trials.
+uses 1 / 12, Exp 5 uses 1 / 3, Exp 7 uses 2 / 8, Exp 3 uses 20, Exp 8 uses 8 fresh datasets, Exp 9 uses 2 / 6, Exp 10 uses 5 datasets, Exp 11 uses 2 / 20 (same datasets as Exp 1 and 6), Exp 12 uses 1 / 12, Exp 13 uses 2 tuning / 10 evaluation optimizer seeds on fixed data, Exp 14 uses 2,000 adversarial trials, Exp 15 uses 8 fresh datasets, Exp 16 repeats Exp 13 on standardised features.
 
 ![least squares](figures/ablation_curves.png)
 *(Curves bottom out at 1e-18 only because the plot clamps there; the underlying gaps are about 1e-31, i.e. float64 round-off.)*
@@ -28,7 +28,9 @@ uses 1 / 12, Exp 5 uses 1 / 3, Exp 7 uses 2 / 8, Exp 3 uses 20, Exp 8 uses 8 fre
 
 ![scaled logistic](figures/logscaled_curves.png)
 
-![real data](figures/real_data_curves.png)
+![real data, raw features](figures/real_data_curves.png)
+
+![real data, standardised features](figures/real_data_std_curves.png)
 
 ![alignment violation](figures/alignment_violation.png)
 
@@ -305,7 +307,7 @@ Jacobi-preconditioned SVRG on least squares, volatile regime; datasets and seeds
 | denominator clamp only | 76.0% | 100.0% |
 | full guard set (this repo) | 0.0% | 0.0% |
 
-### Experiment 13 (real data): breast_cancer
+### Experiment 13 (real data, raw features): breast_cancer
 
 Breast Cancer Wisconsin (diagnostic), logistic regression; n=569, d=31 (incl. intercept), raw features spanning 5.3 decades of scale; batch 32, snapshot every 35 steps; Jacobi SVRG added. Budget: 1000 epochs of sample-gradient evaluations. cond(H) at the optimum falls from 3.09e+07 to 2.54e+05 under Jacobi scaling (1.2e+02x). Median [IQR] over 10 optimizer seeds (the data are fixed); the target is 1e-08 x the initial gap.
 
@@ -320,7 +322,7 @@ Breast Cancer Wisconsin (diagnostic), logistic regression; n=569, d=31 (incl. in
 | Coordinate SVRG, cosine lr (ours) | 3.16e-02 | 6.01e-03 [5.62e-03, 6.66e-03] | not reached |
 | Jacobi SVRG, tuned lr | 5.62e-01 | 6.01e-03 [5.99e-03, 6.04e-03] | not reached |
 
-### Experiment 13 (real data): wine
+### Experiment 13 (real data, raw features): wine
 
 Wine (class 0 vs rest), logistic regression; n=178, d=14 (incl. intercept), raw features spanning 3.4 decades of scale; batch 16, snapshot every 22 steps; Jacobi SVRG added. Budget: 1000 epochs of sample-gradient evaluations. cond(H) at the optimum falls from 1.07e+07 to 4.04e+03 under Jacobi scaling (2.7e+03x). Median [IQR] over 10 optimizer seeds (the data are fixed); the target is 1e-08 x the initial gap.
 
@@ -335,7 +337,7 @@ Wine (class 0 vs rest), logistic regression; n=178, d=14 (incl. intercept), raw 
 | Coordinate SVRG, cosine lr (ours) | 3.16e-02 | 8.48e-03 [5.05e-03, 8.75e-03] | not reached |
 | Jacobi SVRG, tuned lr | 5.62e-01 | 1.70e-03 [1.70e-03, 1.71e-03] | not reached |
 
-### Experiment 13 (real data): diabetes
+### Experiment 13 (real data, raw features): diabetes
 
 Diabetes (raw, unscaled features), least squares; n=442, d=11 (incl. intercept), raw features spanning 1.8 decades of scale; batch 32, snapshot every 27 steps; Jacobi SVRG added. Budget: 1000 epochs of sample-gradient evaluations. cond(H) at the optimum falls from 5.24e+07 to 4.01e+04 under Jacobi scaling (1.3e+03x). Median [IQR] over 10 optimizer seeds (the data are fixed); the target is 1e-08 x the initial gap.
 
@@ -351,6 +353,75 @@ Diabetes (raw, unscaled features), least squares; n=442, d=11 (incl. intercept),
 | Jacobi SVRG, tuned lr | 1.33e-01 | 1.80e+01 [1.80e+01, 1.80e+01] | not reached |
 
 † best learning rate sat on the edge of the sweep grid.
+
+### Experiment 16 (same datasets, standardised features): breast_cancer
+
+Breast Cancer Wisconsin (diagnostic), logistic regression; n=569, d=31 (incl. intercept), standardised features (unit variance, so no scale ill-conditioning; collinearity remains); batch 32, snapshot every 35 steps; Jacobi SVRG added. Budget: 1000 epochs of sample-gradient evaluations. cond(H) at the optimum falls from 1.40e+02 to 1.40e+02 under Jacobi scaling (1.0e+00x). Median [IQR] over 10 optimizer seeds (the data are fixed); the target is 1e-08 x the initial gap.
+
+| Method | tuned lr | final gap, median [IQR] | evals to target |
+|---|---|---|---|
+| SGD + momentum | 1.33e-01 | 1.47e-05 [8.08e-06, 2.20e-05] | not reached |
+| SGD + momentum, cosine lr | 5.62e-01 | 1.35e-06 [9.29e-07, 1.47e-06] | not reached |
+| Adam (clamped) | 1.78e-03 | 2.12e-05 [1.24e-05, 2.41e-05] | not reached |
+| Adam (clamped), cosine lr | 7.50e-03 | 1.26e-06 [8.27e-07, 1.38e-06] | not reached |
+| SVRG + momentum | 2.37e+00 | 2.22e-20 [1.72e-20, 4.20e-20] | 183,346 |
+| Coordinate SVRG (ours) | 1.78e-03 | 8.73e-06 [8.69e-06, 8.79e-06] | not reached |
+| Coordinate SVRG, cosine lr (ours) | 3.16e-02 | 1.05e-14 [3.47e-16, 1.51e-13] | 211,308 |
+| Jacobi SVRG, tuned lr | 5.62e-01 | 2.04e-19 [1.76e-19, 2.33e-19] | 182,585 |
+
+### Experiment 16 (same datasets, standardised features): wine
+
+Wine (class 0 vs rest), logistic regression; n=178, d=14 (incl. intercept), standardised features (unit variance, so no scale ill-conditioning; collinearity remains); batch 16, snapshot every 22 steps; Jacobi SVRG added. Budget: 1000 epochs of sample-gradient evaluations. cond(H) at the optimum falls from 3.37e+01 to 3.37e+01 under Jacobi scaling (1.0e+00x). Median [IQR] over 10 optimizer seeds (the data are fixed); the target is 1e-08 x the initial gap.
+
+| Method | tuned lr | final gap, median [IQR] | evals to target |
+|---|---|---|---|
+| SGD + momentum | 1.33e-01 | 4.90e-07 [3.39e-07, 5.89e-07] | not reached |
+| SGD + momentum, cosine lr | 5.62e-01 | 6.10e-08 [4.09e-08, 8.50e-08] | not reached |
+| Adam (clamped) | 1.78e-03 | 6.31e-07 [5.01e-07, 9.27e-07] | not reached |
+| Adam (clamped), cosine lr | 7.50e-03 | 7.73e-08 [7.25e-08, 8.29e-08] | not reached |
+| SVRG + momentum | 1.00e+01 † | 2.35e-31 [2.31e-31, 2.46e-31] | 18,490 |
+| Coordinate SVRG (ours) | 3.16e-02 | 1.64e-31 [9.96e-32, 1.83e-31] | 76,126 |
+| Coordinate SVRG, cosine lr (ours) | 5.62e-01 | 8.94e-31 [2.88e-31, 1.66e-29] | 101,046 |
+| Jacobi SVRG, tuned lr | 2.37e+00 | 3.78e-32 [2.27e-32, 6.41e-32] | 20,286 |
+
+### Experiment 16 (same datasets, standardised features): diabetes
+
+Diabetes (raw, unscaled features), least squares; n=442, d=11 (incl. intercept), standardised features (unit variance, so no scale ill-conditioning; collinearity remains); batch 32, snapshot every 27 steps; Jacobi SVRG added. Budget: 1000 epochs of sample-gradient evaluations. cond(H) at the optimum falls from 4.70e+02 to 4.70e+02 under Jacobi scaling (1.0e+00x). Median [IQR] over 10 optimizer seeds (the data are fixed); the target is 1e-08 x the initial gap.
+
+| Method | tuned lr | final gap, median [IQR] | evals to target |
+|---|---|---|---|
+| SGD + momentum | 3.16e-02 | 5.45e-01 [3.46e-01, 1.06e+00] | not reached |
+| SGD + momentum, cosine lr | 1.33e-01 | 1.78e-02 [1.42e-02, 2.36e-02] | not reached |
+| Adam (clamped) | 1.33e-01 | 7.76e-01 [6.83e-01, 8.63e-01] | not reached |
+| Adam (clamped), cosine lr | 2.37e+00 | 2.11e-02 [1.53e-02, 2.88e-02] | not reached |
+| SVRG + momentum | 5.62e-01 | 8.16e-24 [6.97e-24, 8.27e-24] | 93,182 |
+| Coordinate SVRG (ours) | 5.62e-01 | 2.51e-26 [1.16e-26, 5.56e-26] | 164,088 |
+| Coordinate SVRG, cosine lr (ours) | 2.37e+00 | 1.65e-27 [1.62e-27, 1.73e-27] | 80,860 |
+| Jacobi SVRG, tuned lr | 1.33e-01 | 3.81e-05 [3.78e-05, 3.96e-05] | 400,365 |
+
+† best learning rate sat on the edge of the sweep grid.
+
+### Experiment 15: held-out loss with learning rates tuned on VALIDATION loss
+
+Non-convex network, 8 fresh datasets, 5000 test rows each. 20% of the training rows are held out to choose each method's learning rate; the model is then retrained on all training rows. Median [IQR]. The irreducible noise floor of the test loss is 0.125.
+
+| Method | test loss | train loss | median chosen lr |
+|---|---|---|---|
+| SGD + momentum | 0.1286 [0.1266, 0.1312] | 0.1221 [0.1187, 0.1236] | 5.62e-02 |
+| SGD + momentum, cosine lr | 0.1275 [0.1253, 0.1293] | 0.1232 [0.1199, 0.1248] | 5.62e-02 |
+| Adam (clamped) | 0.1293 [0.1277, 0.1325] | 0.1210 [0.1199, 0.1251] | 3.16e-04 |
+| Adam (clamped), cosine lr | 0.1319 [0.1305, 0.1344] | 0.1172 [0.1142, 0.1199] | 1.78e-03 |
+| SVRG + momentum | 0.1287 [0.1253, 0.1293] | 0.1237 [0.1207, 0.1246] | 5.62e-02 |
+| Coordinate SVRG (ours) | 0.1338 [0.1307, 0.1381] | 0.1215 [0.1177, 0.1260] | 3.16e-04 |
+| Coordinate SVRG, cosine lr (ours) | 0.1304 [0.1288, 0.1333] | 0.1175 [0.1162, 0.1204] | 1.78e-03 |
+
+Paired test-loss difference versus the best baseline by median (SGD + momentum, cosine lr); negative favours the first method.
+
+| Method | median diff | 95% CI |
+|---|---|---|
+| SVRG + momentum | +0.0000 | [-0.0001, +0.0007] |
+| Coordinate SVRG (ours) | +0.0058 | [+0.0043, +0.0100] |
+| Coordinate SVRG, cosine lr (ours) | +0.0038 | [+0.0032, +0.0044] |
 
 ### Experiment 10: predicted benefit of diagonal preconditioning (Proposition 5)
 
@@ -437,6 +508,18 @@ Difference in `log10(final gap)`: **negative means the first method is better**.
 | Exp 13 real / diabetes | Jacobi SVRG, tuned lr vs Coordinate SVRG, cosine lr (ours) | -0.43 | [-0.43, -0.43] | 10/10 |
 | Exp 13 real / diabetes | Coordinate SVRG, cosine lr (ours) vs Adam (clamped), cosine lr | +0.30 | [+0.30, +0.31] | 0/10 |
 | Exp 13 real / diabetes | Coordinate SVRG (ours) vs SVRG + momentum | -0.33 | [-0.52, +0.53] | 7/10 |
+| Exp 16 real / breast_cancer | Jacobi SVRG, tuned lr vs Adam (clamped), cosine lr | -12.71 | [-12.87, -12.51] | 10/10 |
+| Exp 16 real / breast_cancer | Jacobi SVRG, tuned lr vs Coordinate SVRG, cosine lr (ours) | -4.65 | [-5.92, -2.36] | 10/10 |
+| Exp 16 real / breast_cancer | Coordinate SVRG, cosine lr (ours) vs Adam (clamped), cosine lr | -8.15 | [-10.22, -6.56] | 10/10 |
+| Exp 16 real / breast_cancer | Coordinate SVRG (ours) vs SVRG + momentum | +14.59 | [+14.27, +14.77] | 0/10 |
+| Exp 16 real / wine | Jacobi SVRG, tuned lr vs SGD + momentum, cosine lr | -24.24 | [-24.43, -23.92] | 10/10 |
+| Exp 16 real / wine | Jacobi SVRG, tuned lr vs Coordinate SVRG, cosine lr (ours) | -1.52 | [-3.33, -0.78] | 9/10 |
+| Exp 16 real / wine | Coordinate SVRG, cosine lr (ours) vs SGD + momentum, cosine lr | -22.88 | [-23.60, -20.99] | 10/10 |
+| Exp 16 real / wine | Coordinate SVRG (ours) vs SVRG + momentum | -0.17 | [-0.41, -0.09] | 9/10 |
+| Exp 16 real / diabetes | Jacobi SVRG, tuned lr vs SGD + momentum, cosine lr | -2.66 | [-2.81, -2.48] | 10/10 |
+| Exp 16 real / diabetes | Jacobi SVRG, tuned lr vs Coordinate SVRG, cosine lr (ours) | +22.36 | [+22.34, +22.42] | 0/10 |
+| Exp 16 real / diabetes | Coordinate SVRG, cosine lr (ours) vs SGD + momentum, cosine lr | -25.01 | [-25.27, -24.77] | 10/10 |
+| Exp 16 real / diabetes | Coordinate SVRG (ours) vs SVRG + momentum | -2.42 | [-2.92, -1.69] | 10/10 |
 | Exp 11 well-scaled features | Jacobi SVRG (theory) vs SGD + momentum, cosine lr | -22.22 | [-22.35, -22.09] | 20/20 |
 | Exp 11 well-scaled features | Jacobi SVRG (theory) vs Coordinate SVRG, cosine lr (ours) | +1.16 | [+1.04, +1.32] | 0/20 |
 | Exp 11 well-scaled features | Jacobi SVRG (theory) vs Coordinate SVRG (ours) | +1.15 | [+1.03, +1.31] | 0/20 |
@@ -564,13 +647,13 @@ decay stops at 8.7e-7, and SVRG + momentum at about 1.6e-4. Nuance 1: this run i
 logistic loss is only the L2 weight, which makes the worst-case Johnson-Zhang recipe far too conservative to be informative. Nuance 2: here constant-rate Coordinate SVRG does
 **not** plateau (7e-14) and beats SVRG + momentum by 9.3 decades (12/12 seeds), so the constant-rate plateau seen on least squares is problem-dependent.
 
-**12. Real data: preconditioning still dominates, but the round-off result does not carry (Experiment 13).**
+**12. Real data with raw features: preconditioning dominates, but the round-off result does not carry (Experiment 13).**
 On three bundled real datasets with raw, unstandardised features (breast cancer and wine as logistic regression, diabetes as least squares; feature scales span
 5.3, 3.4 and 1.8 decades), Jacobi scaling cuts the Hessian condition number at the optimum by about 1.2e2, 2.7e3 and 1.3e3. Preconditioned methods (Jacobi SVRG,
-Coordinate SVRG, Adam) beat unpreconditioned ones (SGD, SVRG + momentum) by large margins on all three. Jacobi SVRG has the lowest median gap on wine and diabetes and is tied with Coordinate SVRG with cosine decay on breast cancer (6.015e-3 versus 6.005e-3), with a margin of only
-0.06 to 0.52 decades over the best tuned baseline.
-**No method reached the 1e-8 target on any dataset in 1000 epochs**: the condition number remains large (2.5e5 on breast cancer even after scaling) and the datasets are tiny.
-Caveats: three datasets cannot support a general claim; the seeds vary only the batch order, so the intervals say nothing about variation across datasets; the best learning rate for
+Coordinate SVRG, Adam) beat unpreconditioned ones (SGD, SVRG + momentum) by large margins on all three. Jacobi SVRG has the lowest median gap on wine and diabetes and is tied with
+Coordinate SVRG with cosine decay on breast cancer (6.015e-3 versus 6.005e-3), with a margin of only 0.06 to 0.52 decades over the best tuned baseline.
+**No method reached the 1e-8 target on any dataset in 1000 epochs**: the condition number remains large (2.5e5 on breast cancer even after Jacobi scaling). Experiment 16 (item 15 below) shows that
+this shortfall comes from the raw scales, not from the data being real. Caveats: three datasets cannot support a general claim; the seeds vary only the batch order; the best learning rate for
 Adam with cosine decay on diabetes sat on the grid edge.
 
 **13. What breaks when an invariant is violated (Experiment 14).**
@@ -580,9 +663,25 @@ extreme but finite inputs and 100% when inputs included infinities or NaN; a cla
 sanitisation and bounding of the gradient, **not** the denominator floor. This corrects an earlier claim in this repository that clamping rather than offsetting the denominator mattered. The inputs
 are deliberately hostile and measure a robustness guarantee, not typical training.
 
+**14. Held-out loss with learning rates chosen on validation loss (Experiment 15): the deficit tracks adaptive scaling, not variance reduction.**
+Experiment 8 tuned learning rates on training loss, which favours methods that fit hardest. Experiment 15 holds out 20% of the training rows to choose each method's rate, retrains, and scores a separate
+test split (8 fresh datasets; noise floor 0.125). Results: SGD with momentum and cosine decay is best (0.1275); **SVRG + momentum ties it** (paired difference +0.0000, CI [-0.0001, +0.0007]) and is better than its own
+non-variance-reduced counterpart (-0.0011, CI [-0.0017, -0.0004], 7 of 8 seeds); Adam is worse than SGD (+0.0012, 8 of 8 seeds), and Coordinate SVRG with cosine decay is worse than the best baseline by +0.0038
+(CI [+0.0032, +0.0044]) but better than Adam with cosine decay (-0.0012, CI [-0.0017, -0.0004]). So with validation-tuned rates the held-out deficit shrinks (+0.0135 in Experiment 8, +0.0038 here) and is
+associated with the *adaptive scaling* (Adam-type methods generalise worse than SGD here) rather than with removing gradient variance; variance reduction alone is neutral to slightly helpful. The "sharp versus flat
+minima" explanation sometimes offered for this was not tested (no sharpness measurement was made). One small network on one synthetic task.
+
+**15. Standardising the real features restores the round-off result (Experiment 16).**
+The same three datasets with features standardised to unit variance: Hessian condition numbers fall from 3.1e7, 1.1e7 and 5.2e7 to 140, 34 and 470. Every SVRG variant that is not
+adaptively scaled reaches float64 round-off or close to it (breast cancer: SVRG + momentum 2e-20, Jacobi SVRG 2e-19; wine: about 1e-31; diabetes: SVRG + momentum 8e-24), reaching the 1e-8 target in 18k to 183k
+sample-gradient evaluations, while the best tuned baselines stop between 6e-8 and 2e-2 and never reach it. So **the real-data shortfall in Experiment 13 was scale ill-conditioning, not "dirty data"**: once the
+scales are removed, the synthetic-data conclusion reproduces on real data. Caveats: collinearity remains (breast cancer features are highly correlated) but its condition number is moderate; on standardised
+features Jacobi scaling is close to the identity, so Jacobi SVRG has no advantage over SVRG + momentum (on diabetes it is the worst SVRG variant, 3.8e-5, because it has no momentum and is budget-limited);
+three small datasets.
+
 ## Limitations (read before citing any number)
 
-* **Mostly synthetic data.** The simulator generates what the model assumes (linear hidden signal, additive noise, jumps). The only real data are three small non-financial datasets (Experiment 13), where the round-off results do not reproduce. Nothing here is evidence of real-market performance.
+* **Mostly synthetic data.** The simulator generates what the model assumes (linear hidden signal, additive noise, jumps). The only real data are three small non-financial datasets (Experiments 13 and 16), where the round-off results reproduce only after the features are standardised. Nothing here is evidence of real-market performance.
 * **Small models, modest scale.** The largest problem is `n = 40000`, `d = 200`, and a direct solve is as fast as any iterative method on it. The non-convex case is one 289-parameter network. No deep-learning results; variance reduction is known to help much less there (Defazio & Bottou, 2019).
 * **Held-out checks are limited.** Experiment 8 uses a random split for logistic regression and the network only, with learning rates tuned on training loss; Experiment 3 is out-of-sample in time but uses least squares. Nothing was tuned on validation data.
 * **Sample-gradient evaluations are not wall-clock time**, and the wall-clock figures are NumPy on one CPU core, not the PyTorch/JAX engines on a GPU.
