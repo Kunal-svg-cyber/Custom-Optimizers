@@ -944,6 +944,11 @@ def hessian_conditioning(hess: FloatArray, diag: FloatArray) -> Dict[str, float]
     }
 
 
+REAL_KEYS: List[Tuple[str, str, int, str]] = [
+    ("real", "Experiment 13 (real data, raw features)", 13, "real_data_curves.png"),
+    ("real_std", "Experiment 16 (same datasets, standardised features)", 16, "real_data_std_curves.png"),
+]
+
 REAL_TASKS: Dict[str, Dict[str, Any]] = {
     "breast_cancer": {"kind": "logistic", "batch": 32, "title": "Breast Cancer Wisconsin (diagnostic), logistic regression"},
     "wine": {"kind": "logistic", "batch": 16, "title": "Wine (class 0 vs rest), logistic regression"},
@@ -951,8 +956,8 @@ REAL_TASKS: Dict[str, Dict[str, Any]] = {
 }
 
 
-def load_real_task(name: str, l2: float) -> Any:
-    """Load a bundled scikit-learn dataset with RAW (unstandardised) features plus an intercept."""
+def load_real_task(name: str, l2: float, standardize: bool = False) -> Any:
+    """Load a bundled scikit-learn dataset plus an intercept; features are RAW unless ``standardize``."""
     from sklearn.datasets import load_breast_cancer, load_diabetes, load_wine
 
     if name == "breast_cancer":
@@ -969,41 +974,43 @@ def load_real_task(name: str, l2: float) -> Any:
         features = d.data.astype(np.float64)
     else:
         raise ValueError(f"unknown real task {name}")
+    if standardize:
+        features = (features - features.mean(axis=0)) / features.std(axis=0)
     features = np.hstack([features, np.ones((features.shape[0], 1))])
     if REAL_TASKS[name]["kind"] == "logistic":
         return LogisticRegression(features, labels, l2)
     return LeastSquares(features, labels)
 
 
-def experiment_real(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
-    """Experiment 13: real data with raw, badly scaled features (no synthetic generator involved)."""
+def experiment_real(cfg: Dict[str, Any], args: argparse.Namespace, standardize: bool = False) -> Dict[str, Any]:
+    """Experiments 13 / 16: real data with raw (13) or standardised (16) features; no synthetic generator."""
     try:
         import sklearn  # noqa: F401
     except ImportError:
-        print("  [exp13] scikit-learn not installed; skipping real-data experiment")
+        print("  [exp13/16] scikit-learn not installed; skipping real-data experiment")
         return {}
     local = argparse.Namespace(**vars(args))
     local.lr_min_exp, local.lr_max_exp = args.real_lr_min_exp, args.real_lr_max_exp
     out: Dict[str, Any] = {"tasks": {}}
     for name, spec in REAL_TASKS.items():
-        obj = load_real_task(name, args.real_l2)
+        obj = load_real_task(name, args.real_l2, standardize)
         obj.prepare()
         n: int = obj.n
         batch: int = int(spec["batch"])
         interval: int = max(8, int(2 * n / batch))
         factory: ObjectiveFactory = lambda seed, sigma, _o=obj: _o  # same data, different seeds
         block = run_ablation(
-            cfg, local, factory, tag=f"exp13/{name}", regimes={"real": 0.0},
+            cfg, local, factory, tag=f"exp{16 if standardize else 13}/{name}", regimes={"real": 0.0},
             epochs=args.real_epochs, batch_size=batch,
             tune_seeds=args.real_tune_seeds, eval_seeds=args.real_eval_seeds,
-            seed_offset=12000 + 100 * list(REAL_TASKS).index(name), lr_points=args.real_lr_points,
+            seed_offset=(15000 if standardize else 12000) + 100 * list(REAL_TASKS).index(name), lr_points=args.real_lr_points,
             snapshot_interval=interval,
         )
         diag_fn = (lambda o: jacobi_diag_logistic(o.features, o.l2)) if spec["kind"] == "logistic" \
             else (lambda o: jacobi_diag_least_squares(o.features))
         best_lr, q50 = append_jacobi_variant(
             block, "real", factory, diag_fn,
-            seed0=int(cfg["seed"]) + 12000 + 100 * list(REAL_TASKS).index(name), sigma=0.0,
+            seed0=int(cfg["seed"]) + (15000 if standardize else 12000) + 100 * list(REAL_TASKS).index(name), sigma=0.0,
             tune_seeds=args.real_tune_seeds, eval_seeds=args.real_eval_seeds, epochs=args.real_epochs,
             batch_size=batch, interval=interval, lr_points=args.real_lr_points,
             lr_min_exp=args.real_lr_min_exp, lr_max_exp=args.real_lr_max_exp, target_ratio=args.target_ratio,
@@ -1013,11 +1020,12 @@ def experiment_real(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, 
         col_std = obj.features[:, :-1].std(axis=0)
         block["conditioning"] = cond
         block["feature_scale_decades"] = float(np.log10(col_std.max() / col_std.min()))
-        block["description"] = (f"{spec['title']}; n={n}, d={obj.d} (incl. intercept), raw features spanning "
-                                f"{block['feature_scale_decades']:.1f} decades of scale; batch {batch}, snapshot every {interval} steps; "
-                                "Jacobi SVRG added")
+        scale_text = ("standardised features (unit variance, so no scale ill-conditioning; collinearity remains)"
+                      if standardize else f"raw features spanning {block['feature_scale_decades']:.1f} decades of scale")
+        block["description"] = (f"{spec['title']}; n={n}, d={obj.d} (incl. intercept), {scale_text}; "
+                                f"batch {batch}, snapshot every {interval} steps; Jacobi SVRG added")
         out["tasks"][name] = block
-        print(f"  [exp13] {name:<14} cond(H) {cond['cond_raw']:.2e} -> {cond['cond_jacobi']:.2e}; "
+        print(f"  [exp{16 if standardize else 13}] {name:<14} cond(H) {cond['cond_raw']:.2e} -> {cond['cond_jacobi']:.2e}; "
               f"jacobi lr={best_lr:.2e} final gap {fmt(q50)}")
     return out
 
@@ -1124,6 +1132,59 @@ def experiment_invariants(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict
               + ", ".join(f"{k} {100 * r:.1f}%" for k, r in rates[tier].items()))
     return {"alignment": rows_out, "failure_rates": rates, "trials": args.inv_trials,
             "probes": args.inv_probes, "batch_size": batch_size}
+
+
+def experiment_validation_tuned(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    """Experiment 15: held-out loss of the non-convex network with learning rates chosen on VALIDATION loss.
+
+    Experiment 8 tuned learning rates on training loss, which favours methods that fit hardest. Here 20% of the
+    training rows are held out; every method's learning rate is the one with the lowest validation loss, then the
+    model is retrained on all training rows and scored on a separate test split.
+    """
+    base0: RegimeConfig = RegimeConfig.from_dict(cfg)
+    base: RegimeConfig = dataclasses.replace(
+        base0, n_features=args.nc_inputs, alpha_drift_sigma=0.0, regime_switch_prob=0.0,
+        n_samples=base0.n_samples + args.ho_test,
+    )
+    sigma: float = float(cfg["environment"]["noise_sigma_levels"]["volatile"])
+    opt_cfg: Dict[str, Any] = dict(cfg["optimizer"])
+    batch_size: int = int(cfg["training"]["batch_size"])
+    seed0: int = int(cfg["seed"]) + 14000
+    lr_grid: FloatArray = 10.0 ** np.linspace(args.lr_min_exp, args.lr_max_exp, args.vt_lr_points)
+    n_train: int = base0.n_samples
+    n_val: int = n_train // 5
+    out: Dict[str, Dict[str, List[float]]] = {
+        v: {"test_loss": [], "train_loss": [], "best_lr": []} for v in VARIANTS
+    }
+    for i in range(args.vt_seeds):
+        ds = make_dataset(base, seed0 + i, sigma)
+        clean = np.einsum("td,td->t", ds.features, ds.alpha_path)
+        y = np.tanh(2.0 * clean) + 0.5 * ds.gaussian_noise
+        perm = np.random.default_rng(seed0 + 700 + i).permutation(ds.n_samples)
+        tr, te = perm[:n_train], perm[n_train:]
+        sub, val = tr[:-n_val], tr[-n_val:]
+
+        def mk(rows: npt.NDArray[np.int64]) -> MLPRegression:
+            return MLPRegression(ds.features[rows], y[rows], args.nc_hidden, init_seed=seed0 + 31 + i)
+
+        sub_obj, val_obj, full_obj, test_obj = mk(sub), mk(val), mk(tr), mk(te)
+        for v in VARIANTS:
+            best_lr, best_val = float(lr_grid[0]), math.inf
+            for lr in lr_grid:
+                run = optimize(sub_obj, DeterministicBatchSampler(sub_obj.n, batch_size, seed0 + i),
+                               reference_config(opt_cfg, v, float(lr)), int(args.nc_epochs * sub_obj.n),
+                               w0=sub_obj.init_weights, lr_schedule=VARIANTS[v][2], track_gap=False)
+                loss = val_obj.loss(run.weights) if (not run.diverged and np.all(np.isfinite(run.weights))) else math.inf
+                if loss < best_val:
+                    best_val, best_lr = loss, float(lr)
+            final = optimize(full_obj, DeterministicBatchSampler(full_obj.n, batch_size, seed0 + i),
+                             reference_config(opt_cfg, v, best_lr), int(args.nc_epochs * full_obj.n),
+                             w0=full_obj.init_weights, lr_schedule=VARIANTS[v][2], track_gap=False)
+            out[v]["test_loss"].append(test_obj.loss(final.weights))
+            out[v]["train_loss"].append(full_obj.loss(final.weights))
+            out[v]["best_lr"].append(best_lr)
+        print(f"  [exp15] seed {i}: test loss " + ", ".join(f"{v} {out[v]['test_loss'][-1]:.4f}" for v in ("adam", "svrg_momentum", "svrg_adam_cosine")))
+    return {"variants": out, "seeds": args.vt_seeds, "test_rows": args.ho_test, "noise_floor": 0.125}
 
 
 def experiment_snapshot_interval(cfg: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
@@ -1529,8 +1590,10 @@ def significance_lines(results: Dict[str, Any]) -> List[str]:
                     f"| {label} / {regime} | {VARIANT_LABELS[a_name]} vs {VARIANT_LABELS[b_name]} | "
                     f"{med:+.2f} | [{lo:+.2f}, {hi:+.2f}] | {wins}/{len(diff)} |"
                 )
-    if results.get("real", {}).get("tasks"):
-        for tname, tblock in results["real"]["tasks"].items():
+    for rkey, rtitle, rnum, rfile in REAL_KEYS:
+        if not results.get(rkey, {}).get("tasks"):
+            continue
+        for tname, tblock in results[rkey]["tasks"].items():
             v = tblock["regimes"]["real"]["variants"]
             best_base = min(baselines, key=lambda b: v[b]["final_gap_median"])
             logs = {m: np.log10(np.maximum(np.asarray(v[m]["final_gaps"], dtype=float), 1e-40)) for m in v}
@@ -1539,7 +1602,7 @@ def significance_lines(results: Dict[str, Any]) -> List[str]:
                 diff = logs[a_name] - logs[b_name]
                 med, lo, hi = paired_bootstrap(diff)
                 lines.append(
-                    f"| Exp 13 real / {tname} | {VARIANT_LABELS[a_name]} vs {VARIANT_LABELS[b_name]} | "
+                    f"| Exp {rnum} real / {tname} | {VARIANT_LABELS[a_name]} vs {VARIANT_LABELS[b_name]} | "
                     f"{med:+.2f} | [{lo:+.2f}, {hi:+.2f}] | {int(np.sum(diff < 0))}/{len(diff)} |")
     if "jacobi" in results:
         for pname, pr in results["jacobi"]["problems"].items():
@@ -1793,11 +1856,13 @@ def write_tables(results: Dict[str, Any], path: Path) -> None:
             cells = " | ".join(f"{100 * iv['failure_rates'][tier][key]:.1f}%" for tier in iv["failure_rates"])
             lines.append(f"| {label} | {cells} |")
         lines.append("")
-    if results.get("real", {}).get("tasks"):
-        for tname, tblock in results["real"]["tasks"].items():
+    for rkey, rtitle, rnum, rfile in REAL_KEYS:
+        if not results.get(rkey, {}).get("tasks"):
+            continue
+        for tname, tblock in results[rkey]["tasks"].items():
             r0 = tblock["regimes"]["real"]
             lines += [
-                f"### Experiment 13 (real data): {tname}",
+                f"### {rtitle}: {tname}",
                 "",
                 f"{tblock['description']}. Budget: {tblock['budget_epochs']} epochs of sample-gradient evaluations. "
                 f"cond(H) at the optimum falls from {tblock['conditioning']['cond_raw']:.2e} to "
@@ -1818,6 +1883,32 @@ def write_tables(results: Dict[str, Any], path: Path) -> None:
                     f"{fmt(r['final_gap_median'])} [{fmt(r['final_gap_q25'])}, {fmt(r['final_gap_q75'])}] | {target_txt} |")
             lines.append("")
         lines += ["† best learning rate sat on the edge of the sweep grid.", ""]
+    if "validation_tuned" in results:
+        vt_res = results["validation_tuned"]
+        lines += [
+            "### Experiment 15: held-out loss with learning rates tuned on VALIDATION loss",
+            "",
+            f"Non-convex network, {vt_res['seeds']} fresh datasets, {vt_res['test_rows']} test rows each. 20% of the training rows are held out "
+            "to choose each method's learning rate; the model is then retrained on all training rows. Median [IQR]. "
+            f"The irreducible noise floor of the test loss is {vt_res['noise_floor']}.",
+            "",
+            "| Method | test loss | train loss | median chosen lr |",
+            "|---|---|---|---|",
+        ]
+        for v, r in vt_res["variants"].items():
+            tq = quartiles(r["test_loss"])
+            rq = quartiles(r["train_loss"])
+            lines.append(f"| {VARIANT_LABELS[v]} | {tq[1]:.4f} [{tq[0]:.4f}, {tq[2]:.4f}] | {rq[1]:.4f} [{rq[0]:.4f}, {rq[2]:.4f}] | "
+                         f"{float(np.median(r['best_lr'])):.2e} |")
+        base_name = min(["sgd_momentum", "sgd_momentum_cosine", "adam", "adam_cosine"],
+                        key=lambda b: float(np.median(vt_res["variants"][b]["test_loss"])))
+        lines += ["", f"Paired test-loss difference versus the best baseline by median ({VARIANT_LABELS[base_name]}); negative favours the first method.",
+                  "", "| Method | median diff | 95% CI |", "|---|---|---|"]
+        for name in ("svrg_momentum", "svrg_adam", "svrg_adam_cosine"):
+            d = np.asarray(vt_res["variants"][name]["test_loss"]) - np.asarray(vt_res["variants"][base_name]["test_loss"])
+            med, lo, hi = paired_bootstrap(d)
+            lines.append(f"| {VARIANT_LABELS[name]} | {med:+.4f} | [{lo:+.4f}, {hi:+.4f}] |")
+        lines.append("")
     if "conditioning" in results:
         cd = results["conditioning"]
         lines += [
@@ -1950,8 +2041,10 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
         fig.tight_layout()
         p = out_dir / "alignment_violation.png"
         fig.savefig(p, dpi=150); plt.close(fig); written.append(str(p))
-    if results.get("real", {}).get("tasks"):
-        tasks = results["real"]["tasks"]
+    for rkey, rtitle, rnum, rfile in REAL_KEYS:
+        if not results.get(rkey, {}).get("tasks"):
+            continue
+        tasks = results[rkey]["tasks"]
         fig, axes = plt.subplots(1, len(tasks), figsize=(5 * len(tasks), 4), sharey=False)
         axes = np.atleast_1d(axes)
         for ax, (tname, tblock) in zip(axes, tasks.items()):
@@ -1964,9 +2057,9 @@ def make_figures(results: Dict[str, Any], out_dir: Path) -> List[str]:
             ax.set_title(f"{tname} ({tblock['feature_scale_decades']:.1f} decades)")
             ax.set_xlabel("sample-gradient evaluations"); ax.grid(alpha=0.3, which="both")
         axes[0].set_ylabel("loss gap  f(w) - f(w*)"); axes[0].legend(fontsize=6)
-        fig.suptitle("Real data, raw unstandardised features (median over optimizer seeds)")
+        fig.suptitle(f"{rtitle} (median over optimizer seeds)")
         fig.tight_layout()
-        p = out_dir / "real_data_curves.png"
+        p = out_dir / rfile
         fig.savefig(p, dpi=150); plt.close(fig); written.append(str(p))
     if "snapshot_interval" in results:
         rows = results["snapshot_interval"]["rows"]
@@ -2037,7 +2130,7 @@ def write_environment(out_dir: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", default=str(REPO_ROOT / "configs" / "stochastic_regime.yaml"))
-    parser.add_argument("--only", nargs="+", type=int, choices=list(range(1, 15)), default=list(range(1, 15)))
+    parser.add_argument("--only", nargs="+", type=int, choices=list(range(1, 17)), default=list(range(1, 17)))
     parser.add_argument("--quick", action="store_true", help="tiny settings for a smoke test")
     parser.add_argument("--tables-only", action="store_true",
                         help="regenerate tables.md and figures from the stored results.json, run nothing")
@@ -2066,6 +2159,9 @@ def main() -> None:
     # experiment 8 (held-out)
     parser.add_argument("--ho-seeds", type=int, default=8)
     parser.add_argument("--ho-test", type=int, default=5000)
+    # experiment 15 (validation-tuned held-out)
+    parser.add_argument("--vt-seeds", type=int, default=8)
+    parser.add_argument("--vt-lr-points", type=int, default=7)
     # experiment 14 (invariant violations)
     parser.add_argument("--inv-probes", type=int, default=400)
     parser.add_argument("--inv-trials", type=int, default=2000)
@@ -2126,6 +2222,7 @@ def main() -> None:
         args.si_intervals, args.si_lr_points, args.si_tune_seeds, args.si_eval_seeds = [8, 32, 128], 3, 1, 2
         args.si_probe_batches = 8
         args.cond_seeds = 2
+        args.vt_seeds, args.vt_lr_points = 2, 3
         args.inv_probes, args.inv_trials = 40, 100
         args.real_epochs, args.real_lr_points, args.real_tune_seeds, args.real_eval_seeds = 40, 5, 1, 2
 
@@ -2186,6 +2283,14 @@ def main() -> None:
         real = experiment_real(cfg, args)
         if real:
             results["real"] = real
+    if 15 in args.only:
+        print("Experiment 15: held-out loss with validation-tuned learning rates")
+        results["validation_tuned"] = experiment_validation_tuned(cfg, args)
+    if 16 in args.only:
+        print("Experiment 16: the same real datasets with standardised features")
+        real_std = experiment_real(cfg, args, standardize=True)
+        if real_std:
+            results["real_std"] = real_std
 
     out_dir: Path = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)

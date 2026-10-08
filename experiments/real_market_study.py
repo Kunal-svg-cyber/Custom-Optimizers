@@ -32,7 +32,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Sequence, Tuple
 
 import numpy as np
 import numpy.typing as npt
