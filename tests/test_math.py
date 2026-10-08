@@ -1431,3 +1431,33 @@ def test_jax_frozen_preconditioner_rejects_invalid_values() -> None:
         make_svrg_step(lambda p, b: jnp.sum(p), config, preconditioner=jnp.array([1.0, 0.0]))
     with pytest.raises(ValueError):
         make_svrg_step(lambda p, b: jnp.sum(p), config, preconditioner=jnp.array([1.0, jnp.nan]))
+
+
+# --------------------------------------------------------------------------- #
+# Closure determinism check (alignment is only as good as the user's closure)
+# --------------------------------------------------------------------------- #
+@requires_torch
+def test_torch_verify_closure_determinism_detects_nondeterministic_closures() -> None:
+    dataset, sampler, _, w, batch_closure, _ = _torch_ls_setup()
+    opt = CoordinateSVRG([w], lr=0.01)
+    before = w.detach().clone()
+    assert opt.verify_closure_determinism(batch_closure, batch_id=3)            # pure in the id
+
+    noisy_calls = {"n": 0}
+
+    def noisy_closure(batch_id: int) -> "torch.Tensor":                         # injects fresh randomness
+        noisy_calls["n"] += 1
+        return batch_closure(batch_id) + 0.01 * torch.randn(()) * w.sum()
+
+    assert not opt.verify_closure_determinism(noisy_closure, batch_id=3)
+
+    counter = {"n": 0}
+
+    def stateful_closure(batch_id: int) -> "torch.Tensor":                      # data depends on call count
+        counter["n"] += 1
+        return batch_closure(batch_id + counter["n"])
+
+    assert not opt.verify_closure_determinism(stateful_closure, batch_id=3)
+    assert torch.equal(w.detach(), before)                                      # nothing was modified
+    with pytest.raises(ValueError):
+        opt.verify_closure_determinism(batch_closure, repeats=1)
