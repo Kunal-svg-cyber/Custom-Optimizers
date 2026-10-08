@@ -402,6 +402,43 @@ class CoordinateSVRG(Optimizer):
                 results.append(g_hat)
         return results
 
+    def verify_closure_determinism(
+        self,
+        closure: BatchClosure,
+        batch_id: int = 0,
+        repeats: int = 2,
+        rtol: float = 1e-5,
+        atol: float = 1e-8,
+    ) -> bool:
+        """Check that ``closure(batch_id)`` is a deterministic function of its id.
+
+        SVRG's variance reduction needs the live and snapshot gradients to see identical data. The engine
+        passes the same id to both, but if the closure itself is not a pure function of that id (a shuffling
+        data loader, dropout, augmentation, a stateful counter), the two evaluations differ and the control
+        variate silently stops working (Experiment 14). This evaluates the closure ``repeats`` times at the
+        CURRENT weights and compares losses and gradients. Small tolerances absorb benign floating-point
+        summation-order noise on GPUs. Weights and optimizer state are not modified.
+
+        Returns True if every repeat agrees with the first, False otherwise.
+        """
+        if repeats < 2:
+            raise ValueError("repeats must be at least 2")
+        blocks: List[_FlatBlock] = [self._ensure_block(i) for i in range(len(self.param_groups))]
+        first_loss: Optional[Tensor] = None
+        first_grads: List[Tensor] = []
+        for _ in range(repeats):
+            loss: Tensor = self._evaluate(closure, int(batch_id), blocks, _SCRATCH_G_LIVE)
+            grads: List[Tensor] = [block.scratch[_SCRATCH_G_LIVE].clone() for block in blocks]
+            if first_loss is None:
+                first_loss, first_grads = loss.clone(), grads
+                continue
+            if not torch.allclose(loss, first_loss, rtol=rtol, atol=atol):
+                return False
+            for current, reference in zip(grads, first_grads):
+                if not torch.allclose(current, reference, rtol=rtol, atol=atol):
+                    return False
+        return True
+
     # ------------------------------------------------------------------ #
     # The optimisation step
     # ------------------------------------------------------------------ #
