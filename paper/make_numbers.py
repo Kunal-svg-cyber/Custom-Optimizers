@@ -12,7 +12,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
@@ -224,6 +224,44 @@ def main(check: bool = False) -> None:
     macros["ExpFourteenFullFinite"] = f"{100 * iv['failure_rates'][tiers[0]]['full']:.0f}"
     macros["ExpFourteenNaiveInf"] = f"{100 * iv['failure_rates'][tiers[1]]['naive']:.0f}"
     macros["ExpFourteenTrials"] = f"{iv['trials']:,}".replace(",", "{,}")
+
+    # ---- Experiment 15 (validation-tuned held-out) ----
+    vt = r["validation_tuned"]["variants"]
+    vt_base = min(BASELINES, key=lambda b: float(np.median(vt[b]["test_loss"])))
+    def vt_diff(a: str, b: str) -> Tuple[float, float, float]:
+        return paired_bootstrap(np.asarray(vt[a]["test_loss"]) - np.asarray(vt[b]["test_loss"]))
+    m15, l15, h15 = vt_diff("svrg_adam_cosine", vt_base)
+    macros["ExpFifteenAdaptiveDiff"] = signed(m15, 4)
+    macros["ExpFifteenAdaptiveCI"] = f"[{signed(l15, 4)}, {signed(h15, 4)}]"
+    m15b, l15b, h15b = vt_diff("svrg_momentum", vt_base)
+    macros["ExpFifteenMomentumDiff"] = signed(m15b, 4)
+    macros["ExpFifteenMomentumCI"] = f"[{signed(l15b, 4)}, {signed(h15b, 4)}]"
+    m15c, _, _ = vt_diff("adam", "sgd_momentum")
+    macros["ExpFifteenAdamVsSgd"] = signed(m15c, 4)
+    macros["ExpFifteenBaselineName"] = VARIANT_LABELS[vt_base]
+
+    # ---- Experiment 16 (standardised real data) ----
+    std = r["real_std"]["tasks"]
+    reached_svrg = 0
+    reached_base = 0
+    base_gaps = []
+    svrg_gaps = []
+    for tname, tb in std.items():
+        v = tb["regimes"]["real"]["variants"]
+        if any(math.isfinite(v[m]["evals_to_target_median"]) for m in v if m.startswith("svrg")):
+            reached_svrg += 1
+        if any(math.isfinite(v[m]["evals_to_target_median"]) for m in BASELINES):
+            reached_base += 1
+        base_gaps.append(min(v[m]["final_gap_median"] for m in BASELINES))
+        svrg_gaps.append(min(v[m]["final_gap_median"] for m in v if m.startswith("svrg")))
+    macros["ExpSixteenSvrgReached"] = f"{reached_svrg}/{len(std)}"
+    macros["ExpSixteenBaselineReached"] = f"{reached_base}/{len(std)}"
+    macros["ExpSixteenBaselineLow"] = sci(min(base_gaps))
+    macros["ExpSixteenBaselineHigh"] = sci(max(base_gaps))
+    macros["ExpSixteenSvrgHigh"] = sci(max(svrg_gaps))
+    macros["ExpSixteenCondBC"] = f"{std['breast_cancer']['conditioning']['cond_raw']:.0f}"
+    macros["ExpSixteenCondWine"] = f"{std['wine']['conditioning']['cond_raw']:.0f}"
+    macros["ExpSixteenCondDiabetes"] = f"{std['diabetes']['conditioning']['cond_raw']:.0f}"
 
     # ---- Experiment 3 (walk-forward) ----
     wf = r["walk_forward"]["by_budget"]
