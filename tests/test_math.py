@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import shutil
 import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple
@@ -72,6 +73,9 @@ except ImportError:  # pragma: no cover - depends on the machine
 
 requires_torch = pytest.mark.skipif(not HAS_TORCH, reason="torch not installed")
 requires_jax = pytest.mark.skipif(not HAS_JAX, reason="jax not installed")
+requires_cc = pytest.mark.skipif(
+    not any(shutil.which(c) for c in ("gcc", "cc", "clang")), reason="no C compiler"
+)
 requires_both = pytest.mark.skipif(
     not (HAS_TORCH and HAS_JAX), reason="needs both torch and jax"
 )
@@ -665,7 +669,7 @@ def test_report_numbers_are_in_sync_with_stored_results_and_macros_are_defined()
     assert check.returncode == 0, check.stdout + check.stderr
     defined = set(re.findall(r"\\newcommand\{\\(\w+)\}", (REPO_ROOT / "paper" / "numbers.tex").read_text(encoding="utf-8")))
     for name in ("technical_report.tex", "one_page_summary.tex"):
-        used = set(re.findall(r"\\(Exp[A-Za-z]+)", (REPO_ROOT / "paper" / name).read_text(encoding="utf-8")))
+        used = set(re.findall(r"\\((?:Exp|Lat)[A-Za-z]+)", (REPO_ROOT / "paper" / name).read_text(encoding="utf-8")))
         assert used, f"{name} uses no generated macros"
         assert used <= defined, f"undefined macros in {name}: {sorted(used - defined)}"
 
@@ -1461,3 +1465,18 @@ def test_torch_verify_closure_determinism_detects_nondeterministic_closures() ->
     assert torch.equal(w.detach(), before)                                      # nothing was modified
     with pytest.raises(ValueError):
         opt.verify_closure_determinism(batch_closure, repeats=1)
+
+
+# --------------------------------------------------------------------------- #
+# Compiled C kernel: a fourth independent implementation of the Jacobi-SVRG update
+# --------------------------------------------------------------------------- #
+@requires_cc
+def test_c_kernel_matches_the_numpy_oracle() -> None:
+    import tempfile
+
+    from benchmarks.latency_kernel import Kernel, build, differential_check
+
+    with tempfile.TemporaryDirectory() as tmp:
+        kernel = Kernel(build(Path(tmp)))
+        assert differential_check(kernel, seed=1) < 1e-10
+        assert differential_check(kernel, seed=2) < 1e-10
