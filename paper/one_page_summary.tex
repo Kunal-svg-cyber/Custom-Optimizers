@@ -42,6 +42,7 @@ Snapshot-interval sensitivity & within \ExpNineMidFactor$\times$ of best for $16
 \textbf{What did not work, stated plainly.}
 \begin{itemize}
 \item \textbf{Real data:} on three small real datasets with raw features no method reached the target and Jacobi SVRG led the best tuned baseline by only \ExpThirteenMinDiff--\ExpThirteenMaxDiff{} decades; after \emph{standardising} the features, SVRG variants reached the target on \ExpSixteenSvrgReached{} datasets and the baselines on \ExpSixteenBaselineReached{}, so the shortfall was raw-scale conditioning.
+\item \textbf{Scope:} offline research, not a production trading component. A compiled single-sample SVRG step costs \LatSvrgOne{} at $d=32$ (inference dot product \LatDot), so the 2\,ms GPU step measures framework overhead, not the algorithm.
 \item \textbf{No wall-clock win} over a direct solve at $n=\ExpFiveN$, $d=\ExpFiveD$ (normal equations \ExpFiveNormalSeconds\,s, SVRG \ExpFiveSvrgSeconds\,s); \textbf{no benefit} for walk-forward signal tracking (IC differences at most \ExpThreeMaxICDiff).
 \item \textbf{Non-convex network:} sharper stationarity but worse held-out loss; with validation-tuned rates the deficit tracks adaptive scaling, not variance reduction. The adaptive engine has \textbf{no convergence proof}; \textbf{no market data} was used; \textbf{GPU wall-clock is unmeasured}.
 \end{itemize}

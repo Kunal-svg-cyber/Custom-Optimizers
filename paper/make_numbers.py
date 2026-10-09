@@ -263,6 +263,22 @@ def main(check: bool = False) -> None:
     macros["ExpSixteenCondWine"] = f"{std['wine']['conditioning']['cond_raw']:.0f}"
     macros["ExpSixteenCondDiabetes"] = f"{std['diabetes']['conditioning']['cond_raw']:.0f}"
 
+    # ---- Compiled-kernel latency ----
+    lat = json.loads((REPO_ROOT / "results" / "latency.json").read_text(encoding="utf-8"))
+    row32 = [x for x in lat["rows"] if x["d"] == 32][0]
+    row128 = [x for x in lat["rows"] if x["d"] == 128][0]
+    def tfmt(ns: float) -> str:
+        return f"{ns:.0f}\\,ns" if ns < 1000 else (f"{ns / 1000:.1f}\\,$\\mu$s" if ns < 1e6 else f"{ns / 1e6:.1f}\\,ms")
+    macros["LatDot"] = tfmt(row32["dot_inference_ns"])
+    macros["LatRls"] = tfmt(row32["rls_update_ns"])
+    macros["LatSvrgOne"] = tfmt(row32["svrg_step_b1_ns"])
+    macros["LatSvrgBatch"] = tfmt(row32["svrg_step_b64_ns"])
+    macros["LatSnapshot"] = tfmt(row32["snapshot_ns"])
+    macros["LatWindow"] = f"{row32['window']:,}".replace(",", "{,}")
+    macros["LatRlsOverSvrgHundredTwentyEight"] = f"{row128['rls_update_ns'] / row128['svrg_step_b1_ns']:.0f}"
+    macros["LatDiffErr"] = sci(lat["differential_max_abs_error"])
+    macros["LatCpu"] = lat["cpu"].replace("(R)", "").replace("Processor", "").replace("  ", " ").strip()
+
     # ---- Experiment 3 (walk-forward) ----
     wf = r["walk_forward"]["by_budget"]
     diffs: List[float] = []

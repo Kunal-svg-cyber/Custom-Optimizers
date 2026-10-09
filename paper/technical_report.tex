@@ -45,7 +45,7 @@ Stochastic gradient methods stall on noisy finite-sum objectives because per-sam
 \item The frozen-preconditioner mode is implemented in both engines (\texttt{set\_frozen\_preconditioner} in PyTorch, a \texttt{preconditioner} argument in JAX), with differential tests against the oracle.
 \item A falsifiable prediction from the theory, tested: a method with theory-prescribed hyper-parameters (Section~\ref{sec:jacobi}) that outperforms the more elaborate adaptive engine on badly scaled problems. The engine's own scaling is best read as a gradient-only proxy for it.
 \end{enumerate}
-I make no claim about real markets, deep networks, or large-scale wall-clock performance.
+I make no claim about real markets, deep networks, large-scale wall-clock performance, or suitability for latency-critical production use.
 
 \section{Method}\label{sec:method}
 Let $F(w)=\frac1n\sum_{i=1}^n f_i(w)$. Given a snapshot $\tilde w$ with full gradient $\mu=\nabla F(\tilde w)$ and a mini-batch $B$, the variance-reduced gradient is
@@ -178,6 +178,10 @@ Two results carry over and one does not. Preconditioned methods (Jacobi SVRG, Co
 \subsection{Walk-forward signal tracking: no benefit}
 In a rolling re-estimation of a drifting alpha under a compute budget, every method's out-of-sample correlation with the clean signal differs from closed-form OLS by at most \ExpThreeMaxICDiff, against a spread across datasets of about \ExpThreeIQR; paired intervals often exclude zero but the effects are negligible, and SVRG never beats Adam. The problem is too small for the choice of optimizer to matter.
 
+\subsection{Per-operation cost in compiled code}\label{sec:latency}
+An external review cited the 2\,ms GPU step (Colab T4, telemetry on, 32 parameters) as evidence that the method is too slow for latency-sensitive use. That figure measures PyTorch and host synchronisation, not the algorithm. A compiled C implementation of the same update (frozen Jacobi preconditioner), which reproduces the NumPy oracle to $\LatDiffErr$, costs \LatSvrgOne{} per single-sample step at $d=32$ and \LatSvrgBatch{} for a 64-sample batch on one core of an \LatCpu{} cloud CPU, against \LatRls{} for a recursive-least-squares update and \LatDot{} for the signal-inference dot product; one snapshot pass over a \LatWindow-row window costs \LatSnapshot. At $d=128$ a single-sample SVRG step is \LatRlsOverSvrgHundredTwentyEight$\times$ cheaper than an RLS update ($O(bd)$ versus $O(d^2)$).
+This shows the algorithm is not intrinsically slow. It does not make this repository a production system (no thread pinning, lock-free queues or fixed-point arithmetic), RLS is exact at every tick so the speed comparison is not a claim of advantage, and fitting and inference are different paths: latency budgets of tens of microseconds apply to inference, while a refit on a trailing window can run off the critical path. The numbers are machine-specific and measured on shared hardware.
+
 \section{Ablating the invariants}\label{sec:invariants}
 \paragraph{Sample alignment (invariant 2).} Taking the snapshot gradient on an \emph{independent} batch instead of the same one destroys the control variate (Figure~\ref{fig:align}). At snapshot distance $0.01$ the estimator's mean squared error is $\ExpFourteenAligned$ with aligned batches, $\ExpFourteenMisaligned$ with misaligned batches, and $\ExpFourteenSgd$ for plain mini-batch SGD: misaligned SVRG is $\ExpFourteenRatio\times$ \emph{worse than not using variance reduction}, and its error does not shrink with distance.
 \begin{figure}[h]
@@ -195,6 +199,7 @@ In a rolling re-estimation of a drifting alpha under a compute budget, every met
 \item \textbf{Engines versus experiments.} The PyTorch and JAX engines passed the full test suite (58 tests at the time, the later real-market-study tests not yet run there), including step-for-step agreement with the oracle, on a Colab T4 runtime; on the GPU the PyTorch engine stayed within $1.8\times10^{-7}$ of the oracle over 100 steps, and a 640-step benchmark's final loss gaps matched the oracle to four significant digits. The reported experiment numbers nevertheless come from the NumPy oracle, and no timing or speed study was done.
 \item \textbf{No convergence proof for the adaptive engine}; the cosine-decay results are empirical.
 \item \textbf{Statistics.} Seed counts range from 3 to 20; intervals are bootstrap intervals over seeds; no multiple-comparison correction; learning rates are tuned on training loss in the non-convex and logistic held-out checks.
+\item \textbf{Scope.} This is an offline research and calibration study, not a production low-latency component; the compiled-kernel timings (Section~\ref{sec:latency}) measure the algorithm on one CPU core, not a deployable system.
 \item \textbf{Tuning cost} is excluded from the iterative wall-clock times.
 \item \textbf{Jacobi-SVRG scope.} It needs the Hessian diagonal, available for linear and generalised-linear models but not in general. It was tested on least squares (theory-prescribed and tuned) and logistic regression (tuned only), its single-sample theory variant is slow per evaluation in wall-clock terms, and the evaluation counts above do not charge the one extra pass that computes $D$.
 \end{itemize}
