@@ -1,0 +1,49 @@
+{
+ "rows": [
+  {
+   "d": 8,
+   "window": 100000,
+   "svrg_step_b1_ns": 59.1526,
+   "sgd_step_b1_ns": 36.105,
+   "svrg_step_b8_ns": 197.6493,
+   "sgd_step_b8_ns": 135.5217,
+   "svrg_step_b64_ns": 1256.37055,
+   "sgd_step_b64_ns": 949.8039,
+   "snapshot_ns": 427701.0,
+   "rls_update_ns": 57.3001,
+   "dot_inference_ns": 2.48085
+  },
+  {
+   "d": 32,
+   "window": 100000,
+   "svrg_step_b1_ns": 128.96755,
+   "sgd_step_b1_ns": 70.29235,
+   "svrg_step_b8_ns": 533.3698,
+   "sgd_step_b8_ns": 387.2929,
+   "svrg_step_b64_ns": 3940.10065,
+   "sgd_step_b64_ns": 3041.99225,
+   "snapshot_ns": 1841713.0,
+   "rls_update_ns": 959.2579,
+   "dot_inference_ns": 14.9067
+  },
+  {
+   "d": 128,
+   "window": 100000,
+   "svrg_step_b1_ns": 387.89325,
+   "sgd_step_b1_ns": 238.5455,
+   "svrg_step_b8_ns": 1643.15135,
+   "sgd_step_b8_ns": 1156.0205,
+   "svrg_step_b64_ns": 12288.45905,
+   "sgd_step_b64_ns": 9583.6878,
+   "snapshot_ns": 8343738.0,
+   "rls_update_ns": 16653.4565,
+   "dot_inference_ns": 61.6644
+  }
+ ],
+ "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+ "compiler_flags": "-O3 -march=native",
+ "python": "3.12.3",
+ "steps_per_timing": 20000,
+ "trials": 7,
+ "differential_max_abs_error": 3.3306690738754696e-16
+}
