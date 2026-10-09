@@ -54,11 +54,16 @@ python -m benchmarks.compare_optimizers --device cuda --wandb-mode disabled   # 
 
 `notebooks/colab_runner.ipynb` does all of this on a Colab T4 (upload the zip or clone your repo, then run the cells in order). `make test`, `make experiments`, `make report` wrap the same commands. A GitHub Actions workflow (`.github/workflows/tests.yml`) runs the test suite on CPU PyTorch and JAX for every push, so the engine tests run automatically once the repository is on GitHub.
 
+## Scope
+
+This repository is an **offline research and calibration** project for linear and generalised-linear signal models on noisy data. It is **not** a production, latency-critical trading component, and no latency-sensitive deployment is claimed. A compiled C kernel (below) shows the algorithm itself is cheap per step, but the PyTorch and JAX engines, snapshot-based variance reduction and the research tooling around them are not what a microsecond trading loop would run.
+
 ## Deployment notes and known constraints
 
 * **Memory.** The PyTorch engine keeps the flat parameters (N), a (4, N) state block (snapshot, full gradient, both moments) and a (3, N) scratch block: about **8N floats**, plus a transient gradient, versus roughly 4N for Adam including gradients. That is about twice Adam's footprint. It is not intended for models with billions of parameters, and variance reduction is known to help little in deep learning anyway; the target regime is linear and generalised-linear models.
 * **Host synchronisation.** `telemetry=True` (the default) reads values back to the host every step. The 2 ms step time measured on a T4 was with telemetry on, on a 32-parameter problem; closures and the update itself do not force synchronisation. Use `telemetry=False` for speed. `benchmarks/timing_study.py` measures both (provided, to be run on a GPU).
 * **Sample alignment.** The engine passes the same batch id to the live and snapshot evaluations, but the PyTorch closure must itself be a pure function of that id (no shuffling loader, dropout or stateful counter). `opt.verify_closure_determinism(closure)` checks this. The JAX engine receives the batch object itself, so it cannot misalign.
+* **Latency of the algorithm itself.** `python -m benchmarks.latency_kernel` compiles `benchmarks/svrg_kernel.c` (a fourth implementation, checked against the NumPy oracle to 3e-16) and measures nanoseconds per operation on one CPU core. On the sandbox's Xeon @ 2.1 GHz at d = 32: signal-inference dot product 15 ns; recursive least squares update 0.96 µs; SVRG single-sample step 129 ns, 64-sample batch 3.9 µs; one snapshot pass over a 100,000-row window 1.8 ms (`results/latency.md`). The 2 ms GPU step quoted elsewhere measures PyTorch plus host synchronisation, not the algorithm. Model fitting and signal inference are different paths: inference is a dot product; a refit on a trailing window can run off the critical path. These are machine-specific numbers on shared hardware, and RLS is exact per tick, so none of this is a claim that SVRG is the better online estimator.
 * **Wall-clock.** No wall-clock win over a direct solve was found at the sizes tested (NumPy, one CPU core). Larger GPU sizes are untested; see `benchmarks/timing_study.py`.
 
 ## Real-market study (provided; run it yourself)
@@ -91,11 +96,13 @@ experiments/real_market_study.py  walk-forward study on real or synthetic return
 experiments/run_experiments.py    sixteen experiments with paired-bootstrap statistics (NumPy; Experiments 13 and 16 need scikit-learn)
 benchmarks/compare_optimizers.py  torch engine vs Adam / SGD, logged to Weights & Biases
 benchmarks/timing_study.py        GPU wall-clock, memory and telemetry-overhead study (provided; run on a GPU)
+benchmarks/latency_kernel.py      compiled-C per-operation latency (SVRG step, RLS, dot product), checked against the oracle
+benchmarks/svrg_kernel.c          the C kernels
 paper/technical_report.tex/.pdf   10-page report; every number is a macro generated from results/experiments.json
 paper/one_page_summary.tex/.pdf   one-page summary (same generated numbers)
 paper/make_numbers.py             results JSON -> LaTeX macros and tables (--check verifies sync)
 docs/CLAIMS.md                    claim -> kind of support -> evidence -> limits
-docs/REVIEWER_FAQ.md              fourteen sceptical questions with honest answers
+docs/REVIEWER_FAQ.md              fifteen sceptical questions with honest answers
 docs/AUDIT_RESPONSE.md            point-by-point response to an external critique: fair, overstated, or wrong, and what was done
 CHANGELOG.md                      additions and, above all, corrections
 results/ENVIRONMENT.txt           software versions that produced results/

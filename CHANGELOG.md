@@ -17,6 +17,7 @@ changed as the evidence came in.
 | Report abstract | "All data are synthetic" | Three small real datasets were added; wording corrected | proofreading the report |
 | Real-data conclusion | "The round-off result does not carry to real data" (Experiment 13) | It carries once the features are standardised; the shortfall was raw-scale conditioning, not real-data difficulty | Experiment 16, prompted by an external audit |
 | Source of the held-out deficit | Attributed to the optimizer's precision (Experiment 8) | With validation-tuned rates it shrinks and tracks adaptive scaling (Adam is also worse than SGD); SVRG + momentum ties the best baseline | Experiment 15, prompted by an external audit |
+| Reading of the 2 ms GPU step | Quoted as a property of the method ("dominated by host synchronisation") | It is PyTorch plus telemetry on a tiny problem; a compiled C kernel runs the same update in about 129 ns per step at d = 32 | compiled-kernel latency study, prompted by a second external review |
 
 ## Additions, in order
 
@@ -29,7 +30,8 @@ changed as the evidence came in.
 7. Technical report, claims-to-evidence map, one-page summary, CI workflow, Colab notebook.
 8. Real-market walk-forward study script with placebo and block bootstrap (provided; no results yet).
 9. Report-number consistency check (`python paper/make_numbers.py --check`).
-10. External-audit response (`docs/AUDIT_RESPONSE.md`); validation-tuned held-out experiment (15); standardised real-data experiment (16); closure-determinism checker; GPU timing-study script (provided, not run); deployment notes.
+10. Compiled C kernel (`benchmarks/svrg_kernel.c`) and latency study (`benchmarks/latency_kernel.py`), checked against the oracle to 3e-16; Scope section; second external-review response.
+11. External-audit response (`docs/AUDIT_RESPONSE.md`); validation-tuned held-out experiment (15); standardised real-data experiment (16); closure-determinism checker; GPU timing-study script (provided, not run); deployment notes.
 
 ## Known open items
 

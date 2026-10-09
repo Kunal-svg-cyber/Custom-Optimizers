@@ -1,4 +1,4 @@
-.PHONY: install test quick experiments tables report market all
+.PHONY: install test quick experiments tables report market latency all
 
 install:
 	pip install -r requirements.txt
@@ -14,6 +14,9 @@ experiments:      # full run, regenerates results/ and docs/figures/ (~15 min, o
 
 tables:           # rebuild tables and figures from the stored results.json
 	python -m experiments.run_experiments --tables-only
+
+latency:          # compiled-kernel per-operation latency (needs gcc); writes results/latency.json
+	python -m benchmarks.latency_kernel
 
 market:           # real-market walk-forward study (needs internet and yfinance)
 	python -m experiments.real_market_study --placebo

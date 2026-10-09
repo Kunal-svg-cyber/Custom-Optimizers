@@ -29,3 +29,7 @@ wandb/
 # Outputs of runs you do yourself: uncomment to keep them out of the repo
 # results/real_market/
 # results/timing/
+
+# Compiled kernels built by benchmarks/latency_kernel.py (built in a temp dir; ignored if built manually)
+*.so
+*.dylib
