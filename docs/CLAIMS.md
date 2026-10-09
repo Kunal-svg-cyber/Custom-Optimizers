@@ -49,6 +49,15 @@ Every substantive claim in this repository, the kind of support it has, where to
 | 27 | The PyTorch engine uses about 8N floats (parameters, a (4, N) state block, a (3, N) scratch block) versus roughly 4N for Adam including gradients | stated from the code | `src/torch_optimizer.py` (`_FlatBlock`) | peak memory not yet measured; `timing_study.py` reports it |
 | 28 | Telemetry-on versus telemetry-off step cost; GPU wall-clock versus direct solves | **not claimed** | `benchmarks/timing_study.py` provided, not run | to be filled in after a GPU run |
 
+## Latency and scope
+
+| # | Claim | Kind | Evidence | Limits |
+|---|---|---|---|---|
+| 29 | A compiled C kernel reproduces the NumPy oracle's Jacobi-SVRG weights | tested | `test_c_kernel_matches_the_numpy_oracle` (max difference 3e-16); `python -m benchmarks.latency_kernel` | double precision, one problem family |
+| 30 | In compiled code on one core, at d = 32, a single-sample SVRG step costs about 129 ns, an RLS update about 0.96 µs and an inference dot product about 15 ns; a 100,000-row snapshot costs about 1.8 ms | measured | `results/latency.json`, `results/latency.md` | machine-specific (Xeon @ 2.1 GHz, shared cloud VM), best-of-7 timings, no thread pinning or fixed-point; says nothing about statistical usefulness |
+| 31 | The 2 ms GPU step reflects framework and host-synchronisation overhead rather than the algorithm | measured (indirectly) | the compiled step is four orders of magnitude cheaper | the split between PyTorch overhead and telemetry synchronisation is not measured; `timing_study.py` would do it |
+| 32 | Suitability for production high-frequency trading | **not claimed** | `README.md` Scope | the repository is offline research; RLS is exact per tick and the project does not show SVRG beating it online |
+
 ## Real-market study (protocol only)
 
 | # | Claim | Kind | Evidence | Limits |

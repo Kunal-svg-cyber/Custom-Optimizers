@@ -20,7 +20,7 @@ the baselines, and several best learning rates sit on grid edges (marked in the 
 
 **4. Float64 round-off sounds too good. What does it mean?**
 It means the method converged until floating-point error dominated on these strongly convex synthetic problems. A "23-decade" difference is not a speed factor;
-read those rows as win counts. On three real datasets the round-off result did **not** reproduce (Experiment 13).
+read those rows as win counts. On three real datasets with raw features the round-off result did **not** reproduce (Experiment 13), but it did once the features were standardised (Experiment 16).
 
 **5. Why did the adaptive method plateau, and is that general?**
 On badly scaled least squares, constant-rate Coordinate SVRG plateaued while a decaying rate did not. That is consistent with normalisation keeping the step near the
@@ -51,3 +51,16 @@ citation's scope was narrowed. Finding and logging these is part of the method.
 
 **12. What would you do next with more time?**
 Run the real-market study and report it, whatever it shows; time the engine on a problem large enough that wall-clock could favour iterative methods; and try to prove or refute the convergence conjecture for the adaptive engine.
+
+**13. Isn't the worse held-out loss just what you get from removing SGD's noise?**
+It was not measured as such. With learning rates chosen on validation loss (Experiment 15) the deficit shrinks, SVRG with plain momentum ties the best baseline, and Adam, which keeps its gradient noise, is itself worse than SGD. That points at adaptive scaling, not at variance reduction.
+A sharp-versus-flat-minima explanation would need a sharpness measurement, which I did not make.
+
+**14. Isn't real data simply harder than your simulator?**
+The simulator already has heavy tails, jumps, regime switches and autocorrelation. The real-data shortfall with raw features disappeared when the same features were standardised (Experiment 16): the cause was raw-scale conditioning (Hessian condition numbers near 1e7), not the data being real.
+See `docs/AUDIT_RESPONSE.md` for the full response to an external critique.
+
+**15. Could this run in a high-frequency trading loop?**
+Not as it stands, and the repository does not claim it. It is an offline research and calibration project. Two things are worth separating, though. First, the 2 ms GPU step quoted in the docs measures PyTorch with host synchronisation on a tiny problem;
+a compiled C implementation of the same update costs about 129 ns per single-sample step at d = 32 (`results/latency.md`). Second, latency budgets of tens of microseconds apply to signal *inference* (a dot product, about 15 ns here), not to *fitting*; a refit on a trailing window can run off the critical path.
+What the project does not show is that variance-reduced fitting beats recursive least squares for online estimation: RLS is exact at every tick and costs about 1 µs at d = 32.

@@ -51,3 +51,25 @@ The PyTorch engine keeps the flat parameters (N), a (4, N) state block and a (3,
 
 Two of the six points led to experiments that changed conclusions (4 and 5), one led to a new safeguard (3), one to documentation and a measurement script (1, 2, 6). None changes the headline
 findings, but the real-data and generalisation statements are now more precise than before. The critique's strongest remaining point is that **wall-clock performance on a GPU is unmeasured**.
+
+---
+
+# Second external review: "4.5 / 10 for high-frequency trading"
+
+A second review rated the project 4.5 / 10 for HFT, praising the engineering and criticising latency, wall-clock performance, streaming applicability and memory. Assessed the same way:
+
+**Largely fair for production HFT, and consistent with the project's own scope.** The project is offline research and never claimed latency-critical deployment; the README now says so in a dedicated **Scope** section. A low HFT rating follows from that scope.
+
+**Factual errors in the review**
+* It says Experiment 3 returned a null result "against OLS on real market data". Experiment 3 uses **simulated** data. **No real market data was analysed anywhere in this repository**; a script for it (`experiments/real_market_study.py`) is provided but has not been run by me.
+* It treats the 2 ms GPU step as the algorithm's cost. That measurement is PyTorch with host synchronisation (telemetry on) on 32 parameters. In compiled code on one CPU core the same update costs about 129 ns per single-sample step at d = 32 (`results/latency.md`; the C kernel matches the oracle to 3e-16). The review's "even without telemetry, PyTorch/JAX introduces immense overhead" is plausible but unmeasured.
+* The "OLS 0.06 s beats SVRG 0.08 s" comparison is NumPy on one CPU core at n = 40000, d = 200, a research-sized refit, not a latency comparison. In HFT the relevant path is *inference* (a dot product, about 15 ns here); fitting can run off the critical path. The review conflates the two.
+* The 8N-float memory footprint is about 2 KB for a 32-parameter model; it matters for very large models, not for HFT-sized ones.
+* "Look-ahead risk" in snapshot passes: a snapshot over a trailing window ending before the current time is causal by construction, and the walk-forward tests check that the pipeline has no look-ahead. The fair part of the point is different: SVRG is a finite-sum method, so a continuously moving window means repeated snapshot passes (about 1.8 ms per 100,000 rows at d = 32).
+
+**Points the review gets right**
+* For online estimation the strong baseline is recursive least squares (exact per tick, about 1 µs at d = 32). The project does **not** show variance-reduced fitting beating it, and the compiled step-cost comparison is not a claim that it should be preferred.
+* Production use would need a reimplementation without Python or framework overhead; the mathematics (Jacobi scaling, the invariants) would carry over, the repository would not.
+* The review's tactical verdict, "use it for offline alpha research", matches the stated scope.
+
+**What was done:** a Scope section; the compiled-kernel latency study with a differential test against the oracle (`benchmarks/latency_kernel.py`); this response; and claims, FAQ and changelog updates.
