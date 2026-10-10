@@ -62,6 +62,7 @@ try:
         SVRGState,
         compute_full_gradient,
         init_state,
+        make_svrg_scan,
         make_svrg_step,
         refresh_snapshot,
         variance_reduced_gradient,
@@ -1480,3 +1481,55 @@ def test_c_kernel_matches_the_numpy_oracle() -> None:
         kernel = Kernel(build(Path(tmp)))
         assert differential_check(kernel, seed=1) < 1e-10
         assert differential_check(kernel, seed=2) < 1e-10
+
+
+# --------------------------------------------------------------------------- #
+# Lazy telemetry (PyTorch) and compiled multi-step scan (JAX)
+# --------------------------------------------------------------------------- #
+@requires_torch
+def test_torch_lazy_telemetry_matches_eager_and_does_not_change_the_trajectory() -> None:
+    _, _, chunks, w_e, closure_e, chunk_e = _torch_ls_setup()
+    _, _, _, w_l, closure_l, chunk_l = _torch_ls_setup()
+    eager = CoordinateSVRG([w_e], lr=0.02, snapshot_interval=4, telemetry=True)
+    lazy = CoordinateSVRG([w_l], lr=0.02, snapshot_interval=4, telemetry="lazy")
+    keys = ("step", "batch_id", "loss", "live_grad_norm", "correction_norm", "full_grad_norm",
+            "snapshot_distance", "vr_grad_norm", "update_norm", "nonfinite_count", "min_denominator",
+            "steps_since_snapshot")
+    for k in range(6):
+        for opt, chunk_closure in ((eager, chunk_e), (lazy, chunk_l)):
+            if opt.needs_snapshot:
+                opt.refresh_snapshot(chunk_closure, num_chunks=len(chunks))
+        eager.step(closure_e)
+        lazy.step(closure_l)
+        if k in (1, 5):                                   # lazy statistics are read back only on some steps
+            a, b = eager.last_stats, lazy.last_stats
+            for key in keys:
+                assert abs(a[key] - b[key]) <= 1e-9 * max(1.0, abs(a[key])), (k, key, a[key], b[key])
+            assert b["step_us_is_host_enqueue_only"] == 1.0
+            assert lazy.last_stats is lazy.last_stats      # cached after the first access
+    assert torch.allclose(w_e.detach(), w_l.detach(), atol=1e-12)
+    w_bad = torch.nn.Parameter(torch.zeros(2))
+    with pytest.raises(ValueError):
+        CoordinateSVRG([w_bad], telemetry="bogus")
+
+
+@requires_jax
+def test_jax_scan_matches_sequential_steps() -> None:
+    dataset, _, loss_fn, batch_at, chunk_stack = _jax_ls_setup()
+    config = SVRGConfig(lr=0.02, snapshot_interval=8)
+    step = make_svrg_step(loss_fn, config)
+    scan = make_svrg_scan(loss_fn, config)
+    params0 = jnp.zeros((dataset.n_features,), dtype=jnp.float32)
+    state0 = refresh_snapshot(params0, init_state(params0), compute_full_gradient(loss_fn, params0, chunk_stack))
+    batches = [batch_at(i) for i in range(8)]
+    stacked = (jnp.stack([b[0] for b in batches]), jnp.stack([b[1] for b in batches]))
+    p, s = params0, state0
+    losses = []
+    for b in batches:
+        p, s, st = step(p, s, b)
+        losses.append(float(st["loss"]))
+    p_scan, s_scan, stats = scan(params0, state0, stacked)
+    assert np.allclose(np.asarray(p), np.asarray(p_scan), atol=1e-6)
+    assert int(s_scan.step) == int(s.step) == 8
+    assert np.asarray(stats["loss"]).shape == (8,)
+    assert np.allclose(np.asarray(stats["loss"]), losses, atol=1e-6)
