@@ -31,11 +31,12 @@ changed as the evidence came in.
 8. Real-market walk-forward study script with placebo and block bootstrap (provided; no results yet).
 9. Report-number consistency check (`python paper/make_numbers.py --check`).
 10. Compiled C kernel (`benchmarks/svrg_kernel.c`) and latency study (`benchmarks/latency_kernel.py`), checked against the oracle to 3e-16; Scope section; second external-review response.
-11. External-audit response (`docs/AUDIT_RESPONSE.md`); validation-tuned held-out experiment (15); standardised real-data experiment (16); closure-determinism checker; GPU timing-study script (provided, not run); deployment notes.
+11. `telemetry="lazy"` mode (no per-step host synchronisation) in the PyTorch engine and `make_svrg_scan` (K steps in one compiled call) in the JAX engine, with tests; third external-review response.
+12. External-audit response (`docs/AUDIT_RESPONSE.md`); validation-tuned held-out experiment (15); standardised real-data experiment (16); closure-determinism checker; GPU timing-study script (provided, not run); deployment notes.
 
 ## Known open items
 
 * No market data has been analysed; run `experiments/real_market_study.py` and report the result.
 * No timing study of the PyTorch engine; the Colab run established agreement with the oracle, not speed. `benchmarks/timing_study.py` is provided but has not been run.
-* The new closure-determinism test and the frozen-preconditioner tests have not yet been confirmed by CI.
+* The closure-determinism test, the frozen-preconditioner tests, the lazy-telemetry test and the JAX scan test have not yet been confirmed by CI or Colab.
 * No convergence proof for the adaptive engine.
