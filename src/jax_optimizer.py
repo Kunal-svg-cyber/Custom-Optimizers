@@ -204,7 +204,40 @@ def variance_reduced_gradient(
 def make_svrg_step(
     loss_fn: LossFn, config: SVRGConfig, preconditioner: Optional[PyTree] = None
 ) -> StepFn:
-    """Build a jitted pure step ``(params, state, batch) -> (params', state', stats)``.
+    """Jitted pure step; see ``_build_step`` for the semantics."""
+    return jax.jit(_build_step(loss_fn, config, preconditioner))
+
+
+def make_svrg_scan(
+    loss_fn: LossFn, config: SVRGConfig, preconditioner: Optional[PyTree] = None
+) -> Callable[[PyTree, "SVRGState", Batch], Tuple[PyTree, "SVRGState", Dict[str, Array]]]:
+    """Run many steps inside ONE compiled call (``jax.lax.scan``): no Python dispatch between steps.
+
+    ``batches`` is a pytree whose leaves share a leading axis of length K; step k uses ``batches[k]``.
+    Returns ``(params, state, stats)`` with every entry of ``stats`` stacked along a leading axis of length K.
+    Snapshots are not refreshed inside the scan: call ``refresh_snapshot`` between scans (for example once
+    per ``snapshot_interval`` batches). The result equals K sequential calls of ``make_svrg_step``.
+    """
+    step = _build_step(loss_fn, config, preconditioner)
+
+    def run(params: PyTree, state: "SVRGState", batches: Batch) -> Tuple[PyTree, "SVRGState", Dict[str, Array]]:
+        def body(carry: Tuple[PyTree, "SVRGState"], batch: Batch) -> Tuple[Tuple[PyTree, "SVRGState"], Dict[str, Array]]:
+            p, st = carry
+            new_p, new_st, stats = step(p, st, batch)
+            return (new_p, new_st), stats
+
+        (final_p, final_state), stacked = jax.lax.scan(body, (params, state), batches)
+        return final_p, final_state, stacked
+
+    return jax.jit(run)
+
+
+def _build_step(
+    loss_fn: LossFn, config: SVRGConfig, preconditioner: Optional[PyTree] = None
+) -> StepFn:
+    """Build the pure (not yet jitted) step ``(params, state, batch) -> (params', state', stats)``.
+
+    ``make_svrg_step`` jits it; ``make_svrg_scan`` runs it inside ``jax.lax.scan``.
 
     ``loss_fn(params, batch)`` must return the mean scalar loss on ``batch``.
     If no snapshot has been committed yet, the step degrades safely to the plain
@@ -307,4 +340,4 @@ def make_svrg_step(
         }
         return new_params, new_state, stats
 
-    return jax.jit(_step)
+    return _step

@@ -109,7 +109,7 @@ class CoordinateSVRG(Optimizer):
         weight_decay: float = 0.0,
         snapshot_interval: int = 50,
         update_clip: float = 10.0,
-        telemetry: bool = True,
+        telemetry: Union[bool, str] = True,
     ) -> None:
         if lr <= 0.0:
             raise ValueError(f"lr must be positive, got {lr}")
@@ -123,6 +123,8 @@ class CoordinateSVRG(Optimizer):
             raise ValueError(f"snapshot_interval must be >= 1, got {snapshot_interval}")
         if update_clip <= 0.0:
             raise ValueError(f"update_clip must be positive, got {update_clip}")
+        if not (telemetry is True or telemetry is False or telemetry == "lazy"):
+            raise ValueError(f"telemetry must be True, False or 'lazy', got {telemetry!r}")
         defaults: Dict[str, Any] = dict(
             lr=lr,
             betas=betas,
@@ -135,8 +137,13 @@ class CoordinateSVRG(Optimizer):
             snapshot_ready=False,
         )
         super().__init__(params, defaults)
-        self.telemetry: bool = telemetry
-        self.last_stats: Dict[str, float] = {}
+        # True: eager (reads values back to the host every step, so it synchronises with the device).
+        # "lazy": statistics stay on the device and are read back only when ``last_stats`` is accessed.
+        # False: no statistics.
+        self.telemetry: Union[bool, str] = telemetry
+        self._lazy: bool = telemetry == "lazy"
+        self._last_stats: Dict[str, float] = {}
+        self._pending: Optional[Tuple[Any, ...]] = None
         self.last_batch_id: Optional[int] = None
         self._blocks: Dict[int, _FlatBlock] = {}
         self._preconditioners: Dict[int, Tensor] = {}
@@ -148,6 +155,15 @@ class CoordinateSVRG(Optimizer):
     def step_count(self) -> int:
         """Number of completed optimizer steps (also the default batch id)."""
         return int(self.param_groups[0]["step"])
+
+    @property
+    def last_stats(self) -> Dict[str, float]:
+        """Telemetry of the most recent step. In ``telemetry="lazy"`` mode the first access after a step
+        reads the values back from the device (one synchronisation); later accesses reuse them."""
+        if self._pending is not None:
+            self._last_stats = self._materialise(self._pending)
+            self._pending = None
+        return self._last_stats
 
     @property
     def needs_snapshot(self) -> bool:
@@ -461,7 +477,7 @@ class CoordinateSVRG(Optimizer):
 
         loss_live, _ = self._gradient_pair(closure, active_batch, blocks)
 
-        per_block_stats: List[Optional[List[float]]] = []
+        per_block_stats: List[Union[None, List[float], Tensor]] = []
         with torch.no_grad():
             for group, block in zip(self.param_groups, blocks):
                 per_block_stats.append(self._update_block(group, block))
@@ -471,7 +487,7 @@ class CoordinateSVRG(Optimizer):
             self._record_stats(per_block_stats, loss_live, active_batch, start_ns)
         return loss_live
 
-    def _update_block(self, group: Dict[str, Any], block: _FlatBlock) -> Optional[List[float]]:
+    def _update_block(self, group: Dict[str, Any], block: _FlatBlock) -> Union[None, List[float], Tensor]:
         beta1, beta2 = group["betas"]
         lr: float = float(group["lr"])
         eps: float = float(group["eps"])
@@ -555,16 +571,20 @@ class CoordinateSVRG(Optimizer):
                 denom.min(),
             ]
         )
+        if self._lazy:
+            return packed                      # stays on the device; read back only when last_stats is accessed
         return [float(x) for x in packed.tolist()]
 
-    def _record_stats(
+    def _fold_stats(
         self,
         per_block_stats: List[Optional[List[float]]],
-        loss_live: Tensor,
+        loss_value: float,
         batch_id: int,
-        start_ns: int,
-    ) -> None:
-        """Fold per-group telemetry into ``self.last_stats`` (microsecond timing)."""
+        step_count: int,
+        steps_since_snapshot: float,
+        step_ns: float,
+        host_only: bool,
+    ) -> Dict[str, float]:
         sq: List[float] = [0.0] * 6
         nonfinite_total: float = 0.0
         min_denominator: float = math.inf
@@ -575,10 +595,8 @@ class CoordinateSVRG(Optimizer):
                 sq[i] += stats[i] * stats[i]
             nonfinite_total += stats[6]
             min_denominator = min(min_denominator, stats[7])
-        loss_value: float = float(loss_live.item())
-        end_ns: int = time.perf_counter_ns()  # .tolist()/.item() already synchronised
-        self.last_stats = {
-            "step": float(self.step_count),
+        result: Dict[str, float] = {
+            "step": float(step_count),
             "batch_id": float(batch_id),
             "loss": loss_value,
             "live_grad_norm": math.sqrt(sq[0]),
@@ -589,10 +607,44 @@ class CoordinateSVRG(Optimizer):
             "update_norm": math.sqrt(sq[5]),
             "nonfinite_count": nonfinite_total,
             "min_denominator": min_denominator,
-            "steps_since_snapshot": float(self.param_groups[0]["steps_since_snapshot"]),
-            "step_ns": float(end_ns - start_ns),
-            "step_us": float(end_ns - start_ns) / 1000.0,
+            "steps_since_snapshot": steps_since_snapshot,
+            "step_ns": step_ns,
+            "step_us": step_ns / 1000.0,
         }
+        if host_only:
+            result["step_us_is_host_enqueue_only"] = 1.0   # lazy mode: device time is not included
+        return result
+
+    def _record_stats(
+        self,
+        per_block_stats: List[Union[None, List[float], Tensor]],
+        loss_live: Tensor,
+        batch_id: int,
+        start_ns: int,
+    ) -> None:
+        """Eager mode: fold telemetry now (this reads values back, hence synchronises). Lazy mode: stash it."""
+        if self._lazy:
+            self._pending = (
+                list(per_block_stats), loss_live, batch_id, start_ns, time.perf_counter_ns(),
+                int(self.step_count), float(self.param_groups[0]["steps_since_snapshot"]),
+            )
+            return
+        floats: List[Optional[List[float]]] = [s for s in per_block_stats]  # type: ignore[misc]
+        loss_value: float = float(loss_live.item())
+        end_ns: int = time.perf_counter_ns()  # .tolist()/.item() already synchronised
+        self._last_stats = self._fold_stats(
+            floats, loss_value, batch_id, int(self.step_count),
+            float(self.param_groups[0]["steps_since_snapshot"]), float(end_ns - start_ns), host_only=False,
+        )
+
+    def _materialise(self, pending: Tuple[Any, ...]) -> Dict[str, float]:
+        blocks, loss_live, batch_id, start_ns, host_end_ns, step_count, since = pending
+        floats: List[Optional[List[float]]] = [
+            None if b is None else [float(x) for x in b.tolist()] for b in blocks
+        ]
+        return self._fold_stats(
+            floats, float(loss_live.item()), batch_id, step_count, since, float(host_end_ns - start_ns), host_only=True,
+        )
 
     # ------------------------------------------------------------------ #
     # Checkpointing
