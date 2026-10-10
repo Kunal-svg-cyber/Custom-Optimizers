@@ -6,7 +6,7 @@ for the SVRG runs, and reports:
 
   1. time to reach a target excess loss for: direct normal equations, direct ``lstsq``, Jacobi-preconditioned
      SVRG (``CoordinateSVRG.set_frozen_preconditioner``, telemetry off), and Adam (untuned, lr = 0.01);
-  2. the per-step cost of the engine with telemetry on versus off (host-synchronisation overhead);
+  2. the per-step cost of the engine with telemetry eager, lazy and off (host-synchronisation overhead);
   3. peak extra GPU memory (beyond the data) of each method.
 
 Design choices that keep the comparison honest
@@ -147,7 +147,7 @@ def step_cost_microbenchmark(x: torch.Tensor, y: torch.Tensor, batch: int, devic
     n, d = x.shape
     nb = n // batch
     out: Dict[str, float] = {}
-    for telemetry in (True, False):
+    for telemetry in (True, "lazy", False):
         w = torch.nn.Parameter(torch.zeros(d, device=device))
         opt = CoordinateSVRG([w], lr=1e-3, betas=(0.0, 0.999), snapshot_interval=10 ** 9, telemetry=telemetry)
 
@@ -164,7 +164,8 @@ def step_cost_microbenchmark(x: torch.Tensor, y: torch.Tensor, batch: int, devic
         for _ in range(steps):
             opt.step(batch_closure)
         sync(device)
-        out["telemetry_on_us" if telemetry else "telemetry_off_us"] = (time.perf_counter() - t0) / steps * 1e6
+        key = {True: "telemetry_on_us", "lazy": "telemetry_lazy_us", False: "telemetry_off_us"}[telemetry]
+        out[key] = (time.perf_counter() - t0) / steps * 1e6
     return out
 
 
@@ -229,9 +230,10 @@ def main() -> None:
         lines.append(f"| {r['n']} | {r['d']} | {r['method']} | {r['seconds']:.3f} | {r['epochs'] if r['epochs'] is not None else '-'} | "
                      f"{'yes' if r['reached'] else 'NO'} | {r['peak_extra_mb']:.0f} |")
     lines += ["", "Engine step cost in its default adaptive mode (microseconds per SVRG step, 200 steps after warm-up):", "",
-              "| size | telemetry on | telemetry off | ratio |", "|---|---|---|---|"]
+              "| size | telemetry on (eager) | telemetry lazy | telemetry off | eager / off |", "|---|---|---|---|---|"]
     for spec, m in micro.items():
-        lines.append(f"| {spec} | {m['telemetry_on_us']:.0f} | {m['telemetry_off_us']:.0f} | {m['telemetry_on_us'] / m['telemetry_off_us']:.1f}x |")
+        lines.append(f"| {spec} | {m['telemetry_on_us']:.0f} | {m['telemetry_lazy_us']:.0f} | {m['telemetry_off_us']:.0f} | "
+                     f"{m['telemetry_on_us'] / m['telemetry_off_us']:.1f}x |")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
