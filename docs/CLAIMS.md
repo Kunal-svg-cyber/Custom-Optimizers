@@ -56,6 +56,8 @@ Every substantive claim in this repository, the kind of support it has, where to
 | 29 | A compiled C kernel reproduces the NumPy oracle's Jacobi-SVRG weights | tested | `test_c_kernel_matches_the_numpy_oracle` (max difference 3e-16); `python -m benchmarks.latency_kernel` | double precision, one problem family |
 | 30 | In compiled code on one core, at d = 32, a single-sample SVRG step costs about 129 ns, an RLS update about 0.96 µs and an inference dot product about 15 ns; a 100,000-row snapshot costs about 1.8 ms | measured | `results/latency.json`, `results/latency.md` | machine-specific (Xeon @ 2.1 GHz, shared cloud VM), best-of-7 timings, no thread pinning or fixed-point; says nothing about statistical usefulness |
 | 31 | The 2 ms GPU step reflects framework and host-synchronisation overhead rather than the algorithm | measured (indirectly) | the compiled step is four orders of magnitude cheaper | the split between PyTorch overhead and telemetry synchronisation is not measured; `timing_study.py` would do it |
+| 33 | `telemetry="lazy"` gives the same statistics as eager telemetry without a host read each step, and does not change the trajectory | tested (test written; first run pending) | `test_torch_lazy_telemetry_matches_eager_*` | whether it removes the 2 ms step on a GPU is unmeasured; `timing_study.py` measures it |
+| 34 | `make_svrg_scan` equals K sequential JAX steps | tested (test written; first run pending) | `test_jax_scan_matches_sequential_steps` | CPU-tested only; no timing claim |
 | 32 | Suitability for production high-frequency trading | **not claimed** | `README.md` Scope | the repository is offline research; RLS is exact per tick and the project does not show SVRG beating it online |
 
 ## Real-market study (protocol only)

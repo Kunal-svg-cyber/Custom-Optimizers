@@ -73,3 +73,16 @@ A second review rated the project 4.5 / 10 for HFT, praising the engineering and
 * The review's tactical verdict, "use it for offline alpha research", matches the stated scope.
 
 **What was done:** a Scope section; the compiled-kernel latency study with a differential test against the oracle (`benchmarks/latency_kernel.py`); this response; and claims, FAQ and changelog updates.
+
+---
+
+# Third review snippet: "what kept it from 10/10"
+
+Three items: memory footprint (8N), host synchronisation from `telemetry=True`, and the research-versus-execution split.
+
+* **Research versus execution:** agreed and already stated; see the README Scope section. The review's own text notes the author says so.
+* **Host synchronisation:** a fair point about the *default* telemetry mode, so it is now addressed in code rather than only documented. `telemetry="lazy"` leaves the statistics on the device and reads them back only when `last_stats` is accessed; the JAX engine has no host reads in a step and gains `make_svrg_scan`, which runs K steps in one compiled call. Both have tests that have not yet been run on CI or Colab, and the effect on GPU step time is unmeasured until `benchmarks/timing_study.py` is run.
+  The review's suggestion of "native C++" is addressed in a limited way by the compiled C kernel (129 ns per single-sample step at d = 32).
+* **Memory:** quantified rather than disputed. 8N floats is about twice Adam, and for a linear model with N = 10 million float32 parameters it is 320 MB; it only becomes a constraint near a billion parameters, which is outside the project's regime.
+
+A perfect score for a production HFT role would additionally require things this project deliberately does not attempt: a lock-free, thread-pinned, fixed-point implementation; online estimation that beats recursive least squares (not shown); and results on real market data (none exist yet).
