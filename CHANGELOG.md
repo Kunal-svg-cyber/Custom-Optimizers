@@ -17,7 +17,9 @@ changed as the evidence came in.
 | Report abstract | "All data are synthetic" | Three small real datasets were added; wording corrected | proofreading the report |
 | Real-data conclusion | "The round-off result does not carry to real data" (Experiment 13) | It carries once the features are standardised; the shortfall was raw-scale conditioning, not real-data difficulty | Experiment 16, prompted by an external audit |
 | Source of the held-out deficit | Attributed to the optimizer's precision (Experiment 8) | With validation-tuned rates it shrinks and tracks adaptive scaling (Adam is also worse than SGD); SVRG + momentum ties the best baseline | Experiment 15, prompted by an external audit |
-| Reading of the 2 ms GPU step | Quoted as a property of the method ("dominated by host synchronisation") | It is PyTorch plus telemetry on a tiny problem; a compiled C kernel runs the same update in about 129 ns per step at d = 32 | compiled-kernel latency study, prompted by a second external review |
+| Reading of the 2 ms GPU step | Quoted as a property of the method ("dominated by host synchronisation") | It is PyTorch per-step overhead on a tiny problem (see the next row for the measured split); a compiled C kernel runs the same update in about 129 ns per step at d = 32 | compiled-kernel latency study, prompted by a second external review |
+| Cause of the 2 ms GPU step | "Dominated by host synchronisation" (telemetry) | About 1.6 ms per step even with telemetry off; eager telemetry adds about 20% and lazy saves about 6%: the floor is PyTorch per-step framework overhead | `timing_study.py` on a Colab T4 |
+| Market evidence | "No market data has been analysed" | One walk-forward study of ten ETFs has been run: no detectable signal, optimizer irrelevant, validated ridge better than OLS | `real_market_study.py` on Colab |
 
 ## Additions, in order
 
@@ -32,11 +34,12 @@ changed as the evidence came in.
 9. Report-number consistency check (`python paper/make_numbers.py --check`).
 10. Compiled C kernel (`benchmarks/svrg_kernel.c`) and latency study (`benchmarks/latency_kernel.py`), checked against the oracle to 3e-16; Scope section; second external-review response.
 11. `telemetry="lazy"` mode (no per-step host synchronisation) in the PyTorch engine and `make_svrg_scan` (K steps in one compiled call) in the JAX engine, with tests; third external-review response.
-12. External-audit response (`docs/AUDIT_RESPONSE.md`); validation-tuned held-out experiment (15); standardised real-data experiment (16); closure-determinism checker; GPU timing-study script (provided, not run); deployment notes.
+12. Results run by the owner on Colab: full test suite (68 passed), real-market study, GPU timing study, Colab latency; results and corrections folded into the report, README and claims map.
+13. External-audit response (`docs/AUDIT_RESPONSE.md`); validation-tuned held-out experiment (15); standardised real-data experiment (16); closure-determinism checker; GPU timing-study script (provided, not run); deployment notes.
 
 ## Known open items
 
-* No market data has been analysed; run `experiments/real_market_study.py` and report the result.
-* No timing study of the PyTorch engine; the Colab run established agreement with the oracle, not speed. `benchmarks/timing_study.py` is provided but has not been run.
-* The closure-determinism test, the frozen-preconditioner tests, the lazy-telemetry test and the JAX scan test have not yet been confirmed by CI or Colab.
+* Real-market evidence is a single study (ten ETFs, daily, simple features); nothing is claimed beyond it.
+* GPU timing covers one problem family (Gaussian features), one GPU and untuned hyper-parameters; larger sizes and badly conditioned problems are untested.
+* The state of the latest GitHub Actions run is not recorded; the full suite (68 tests) passed on Colab.
 * No convergence proof for the adaptive engine.

@@ -21,6 +21,8 @@ honest account of what the evidence does and does not show.
 | Real data (breast cancer, wine, diabetes), raw features: preconditioning dominates but **no method reaches the target** (Hessian condition numbers 1e7). **Standardised, the round-off result reproduces** (SVRG variants at 1e-20 to 1e-31, best baselines 6e-8 to 2e-2): the shortfall was raw-scale conditioning, not 'dirty data' | Experiments 13, 16 |
 | Non-convex network, validation-tuned learning rates: held-out deficit of Coordinate SVRG shrinks to +0.0038; SVRG + momentum ties the best baseline; Adam is worse than SGD, so the deficit tracks adaptive scaling, not variance reduction | Experiment 15 |
 | Ablating invariants: misaligned batches are 2.1x worse than no variance reduction; textbook Adam fails 76% to 100% of adversarial float32 trials where the full guard set fails 0%; the gradient bound, not the denominator floor, is the operative guard | Experiment 14 |
+| Real market data (10 ETFs, daily, 2008 to 2025): **no detectable tradable signal**; every net-of-cost Sharpe is negative; Jacobi SVRG reproduces OLS exactly and Adam is indistinguishable from it, so the optimizer does not matter; validated ridge beats OLS by +0.0101 IC (CI [+0.0012, +0.0188]) | `experiments/real_market_study.py` |
+| GPU wall-clock (T4, float32): SVRG ties the best direct solve only at the largest size tested (d = 2048: 0.49 s vs 0.49 s) and loses at smaller sizes; the engine step costs about 1.6 ms even with telemetry off, so the 2 ms step was framework overhead, not host synchronisation | `benchmarks/timing_study.py` |
 | Gradient variance falls about 1e15x along the trajectory while SGD variance stays flat, and stays under the proved bounds in 25/25 probes | Experiment 2, Lemma 2, Proposition 3 |
 | No wall-clock win over a direct solve at `n = 40000`, `d = 200` (normal equations 0.06 s vs SVRG 0.08 s) | Experiment 5 |
 | Walk-forward signal tracking: differences from OLS are at most 0.005 in IC, none favouring SVRG over Adam | Experiment 3 (null result for SVRG) |
@@ -61,21 +63,20 @@ This repository is an **offline research and calibration** project for linear an
 ## Deployment notes and known constraints
 
 * **Memory.** The PyTorch engine keeps the flat parameters (N), a (4, N) state block (snapshot, full gradient, both moments) and a (3, N) scratch block: about **8N floats**, plus a transient gradient, versus roughly 4N for Adam including gradients. That is about twice Adam's footprint, which is trivial for linear models (even N = 10 million float32 parameters is 8N x 4 B = 320 MB) and only matters near a billion parameters. It is not intended for such models, and variance reduction is known to help little in deep learning anyway; the target regime is linear and generalised-linear models.
-* **Host synchronisation.** `telemetry=True` (the default, "eager") reads values back to the host every step, which synchronises with the device; the 2 ms step measured on a T4 (32 parameters) was in this mode. `telemetry="lazy"` keeps the statistics on the device and reads them back only when `last_stats` is accessed (its `step_us` then measures host enqueue time only, flagged in the output); `telemetry=False` records nothing. The closures and the update itself contain no host reads. The JAX engine has no host reads inside a step, and `make_svrg_scan` runs K steps in a single compiled call with no Python dispatch between them. `benchmarks/timing_study.py` measures all three modes (provided, to be run on a GPU); the lazy mode and the scan are covered by new tests that have not yet been run on CI or Colab.
+* **Per-step cost of the PyTorch engine (measured on a T4).** About **1.6 ms per step with telemetry off, 1.9 ms with `telemetry="lazy"` and 2.0 ms with the default eager telemetry**, independent of problem size from d = 256 to 2048 (`results/timing/report.md`). So host synchronisation from telemetry is a minor part (eager costs about 1.2x the telemetry-off step; lazy saves about 6%); the floor is per-step framework overhead (kernel launches and autograd for the two gradient evaluations). An earlier version of this README attributed the 2 ms step to host synchronisation; that was wrong. `telemetry="lazy"` keeps statistics on the device and reads them back only when `last_stats` is accessed; `telemetry=False` records nothing. The JAX engine has no host reads inside a step, and `make_svrg_scan` runs K steps in one compiled call.
 * **Sample alignment.** The engine passes the same batch id to the live and snapshot evaluations, but the PyTorch closure must itself be a pure function of that id (no shuffling loader, dropout or stateful counter). `opt.verify_closure_determinism(closure)` checks this. The JAX engine receives the batch object itself, so it cannot misalign.
-* **Latency of the algorithm itself.** `python -m benchmarks.latency_kernel` compiles `benchmarks/svrg_kernel.c` (a fourth implementation, checked against the NumPy oracle to 3e-16) and measures nanoseconds per operation on one CPU core. On the sandbox's Xeon @ 2.1 GHz at d = 32: signal-inference dot product 15 ns; recursive least squares update 0.96 µs; SVRG single-sample step 129 ns, 64-sample batch 3.9 µs; one snapshot pass over a 100,000-row window 1.8 ms (`results/latency.md`). The 2 ms GPU step quoted elsewhere measures PyTorch plus host synchronisation, not the algorithm. Model fitting and signal inference are different paths: inference is a dot product; a refit on a trailing window can run off the critical path. These are machine-specific numbers on shared hardware, and RLS is exact per tick, so none of this is a claim that SVRG is the better online estimator.
-* **Wall-clock.** No wall-clock win over a direct solve was found at the sizes tested (NumPy, one CPU core). Larger GPU sizes are untested; see `benchmarks/timing_study.py`.
+* **Latency of the algorithm itself.** `python -m benchmarks.latency_kernel` compiles `benchmarks/svrg_kernel.c` (a fourth implementation, checked against the NumPy oracle to 3e-16) and measures nanoseconds per operation on one CPU core. At d = 32 on two machines: signal-inference dot product 15 ns (development sandbox) and 20 ns (Colab); SVRG single-sample step 129 ns and 217 ns; 64-sample batch 3.9 µs and 6.9 µs; recursive least squares update 0.96 µs and 1.5 µs; one snapshot pass over a 100,000-row window 1.8 ms and 3.1 ms (`results/latency.md`, `results/latency_colab.md`). The 2 ms GPU step is framework overhead, not the algorithm. Model fitting and signal inference are different paths: inference is a dot product; a refit on a trailing window can run off the critical path. These are machine-specific numbers on shared hardware, and RLS is exact per tick, so none of this is a claim that SVRG is the better online estimator.
+* **GPU wall-clock against direct solves (measured on a T4, float32, Gaussian features, fixed untuned hyper-parameters).** Jacobi SVRG (the PyTorch engine) reached the target in 3 epochs at every size and took 1.91 s, 0.94 s and 0.49 s at (n, d) = (100k, 256), (200k, 1024), (200k, 2048). Direct normal equations took 0.16 s, 0.15 s and 0.49 s: **faster at the two smaller sizes and tied at d = 2048**, where `lstsq` was 3.6x slower than SVRG and used 3.3 GB of extra memory against 2 MB. Untuned Adam did not reach the target in 60 epochs at any size. The crossover with the best direct method is at about d = 2048 on this hardware; larger sizes, badly conditioned problems and tuned hyper-parameters were not tested (`results/timing/report.md`).
 
-## Real-market study (provided; run it yourself)
+## Real-market study (run by the repository owner on Colab)
 
-`experiments/real_market_study.py` runs a purged walk-forward comparison of OLS, ridge, budget-limited Adam, budget-limited
-Jacobi SVRG and 21-day momentum on daily returns of a panel of assets (Yahoo Finance via `yfinance`, your own CSVs via `--csv-dir`,
-or a synthetic stand-in via `--synthetic` for smoke tests). Safeguards: features use only past data (unit-tested), refits train only
-on rows whose targets are already known (unit-tested against look-ahead), and `--placebo` repeats the whole run on circularly
-shifted targets so that a null is visible as a null. Results come with moving-block-bootstrap intervals and net-of-cost Sharpe.
-**No real-market results are included in this repository yet**; the honest prior is that daily returns are barely predictable, so
-expect small or null differences. On the synthetic stand-in (weak genuine signal) Jacobi SVRG matched OLS and budget-limited Adam
-was worse, which shows the pipeline can tell optimizers apart when signal-to-noise is very low; that is not a market result.
+`experiments/real_market_study.py` runs a purged walk-forward comparison of OLS, ridge, budget-limited Adam, budget-limited Jacobi SVRG and 21-day momentum on daily returns of ten ETFs (Yahoo Finance, 2008 to 2025; 3,749 out-of-sample days; nine causal features; 756-day window refitted every 21 days; dollar-neutral long-short strategy; 5 bps cost per unit traded). Safeguards: features use only past data and refits train only on rows whose targets are already known (both unit-tested), and a placebo run on circularly shifted targets shows what noise looks like. Full output: `results/real_market/report.md`.
+
+**Result: no detectable tradable signal, and no effect of the optimizer.**
+* The mean daily cross-sectional rank IC of the fitted models (-0.0022 to +0.0079) lies inside the placebo's range (-0.0091 to +0.0090). The pooled IC is weakly positive (+0.019 for OLS, +0.029 for ridge), but the net-of-cost Sharpe ratio is negative for every fitted model (best -0.76; OLS -1.21 at a turnover of 1.09 per day).
+* Budget-limited Jacobi SVRG reproduces OLS to four decimals (IC difference +0.0000, 95% CI [-0.0000, +0.0001]) and budget-limited Adam is statistically indistinguishable from it (+0.0004, CI [-0.0078, +0.0087]): on this small, well-conditioned problem the iterative methods converge to the closed-form solution.
+* **Regularisation, not optimisation, is what mattered:** validated ridge beat OLS by +0.0101 in mean daily IC (CI [+0.0012, +0.0188]) and by +0.45 in net Sharpe (CI [+0.20, +0.69]), though every net Sharpe remains negative.
+* Caveats: ten ETFs, daily data, simple features, a flat cost assumption, one placebo draw (so the placebo range is itself uncertain), no multiple-comparison correction. This supports no claim of a tradable edge and says nothing about other assets or frequencies.
 
 ```bash
 pip install yfinance
@@ -95,7 +96,7 @@ tests/test_math.py                invariant tests, theory checks, engine-vs-orac
 experiments/real_market_study.py  walk-forward study on real or synthetic returns (placebo, block bootstrap)
 experiments/run_experiments.py    sixteen experiments with paired-bootstrap statistics (NumPy; Experiments 13 and 16 need scikit-learn)
 benchmarks/compare_optimizers.py  torch engine vs Adam / SGD, logged to Weights & Biases
-benchmarks/timing_study.py        GPU wall-clock, memory and telemetry-overhead study (provided; run on a GPU)
+benchmarks/timing_study.py        GPU wall-clock, memory and telemetry-overhead study (run on a Colab T4; output in results/timing/)
 benchmarks/latency_kernel.py      compiled-C per-operation latency (SVRG step, RLS, dot product), checked against the oracle
 benchmarks/svrg_kernel.c          the C kernels
 paper/technical_report.tex/.pdf   10-page report; every number is a macro generated from results/experiments.json
@@ -108,16 +109,17 @@ CHANGELOG.md                      additions and, above all, corrections
 results/ENVIRONMENT.txt           software versions that produced results/
 docs/THEORY.md                    lemmas with proofs, cited theorem, open questions
 docs/RESULTS.md                   tables, figures, interpretation, limitations
-results/                          raw JSON + tables from the last run
+results/                          experiments.json + tables from the last run; latency.{json,md} and latency_colab.*;
+                                  real_market/report.md and timing/ (outputs of the scripts run on Colab)
 ```
 
 ## Validation status
 
-* **Google Colab (T4 GPU), run by the repository owner:** the full suite passed (**58 tests at the time**, 106 s; the five tests added later for the real-market study have not yet been run there), including every PyTorch and JAX engine test, the step-for-step differential tests against the NumPy oracle, the frozen-preconditioner tests and the fuzz tests.
-* **GPU engine against the oracle:** the PyTorch engine running on the T4 stayed within **1.8e-7** of the NumPy reference over 100 steps (float32).
-* **GPU benchmark against the oracle:** a 640-step benchmark on the T4 produced final SVRG numbers (loss gap 1.343e-7, distance to optimum 5.089e-4) and Adam numbers (2.016e-2, 0.2009) that the NumPy oracle reproduces to four significant digits with identical settings. (The benchmark compares methods at equal *steps*, not equal gradient budgets; it is a correctness check, not the evidence behind the headline findings.)
-* An earlier GitHub Actions run (Python 3.10 log) passed 44 of 45 tests; the one failure was a wrong assertion in the torch fuzz test, since corrected. Frozen-preconditioner tests were added afterwards; they passed on Colab, and a fresh CI run will confirm on Python 3.10 and 3.12.
-* All experiment numbers in `docs/RESULTS.md` come from the NumPy oracle, not from the torch/JAX engines. No speed claim is made: a telemetry-enabled SVRG step took about 2 ms on the T4 for a 32-parameter problem, dominated by host synchronisation.
+* **Google Colab (T4 GPU, torch 2.11), run by the repository owner:** the **full current suite, 68 tests, passed** (135 s). That includes every PyTorch and JAX engine test, the step-for-step differential tests against the NumPy oracle, the frozen-preconditioner tests, the fuzz tests, and the newest tests (lazy telemetry, the JAX scan, the closure-determinism check, the compiled C kernel).
+* **GPU engine against the oracle (earlier run):** the PyTorch engine on the T4 stayed within **1.8e-7** of the NumPy reference over 100 steps (float32); a 640-step benchmark reproduced the oracle's final SVRG and Adam numbers to four significant digits.
+* **Compiled C kernel:** reproduces the oracle to 3.3e-16 on both the development machine and Colab.
+* An earlier GitHub Actions run (Python 3.10 log) passed 44 of 45 tests; the one failure was a wrong assertion in a fuzz test, since corrected. The state of the latest CI run is not recorded here; check the Actions tab.
+* All experiment numbers in `docs/RESULTS.md` come from the NumPy oracle, not from the torch/JAX engines. Timing results come from separate scripts run on Colab (see below).
 
 ## PyTorch usage
 
