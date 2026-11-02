@@ -21,7 +21,7 @@ Usage on a Colab T4 (repo root):
     python -m benchmarks.timing_study --sizes 100000x256 200000x1024 200000x2048
     python -m benchmarks.timing_study --device cpu --sizes 20000x64     # slow smoke test, no GPU needed
 
-Nothing here has been run by the author's sandbox (no torch available); it is provided to be run and reported.
+Run on a Colab T4 by the repository owner; the printed report is stored in results/timing/. The author's own sandbox has no GPU.
 """
 
 from __future__ import annotations
