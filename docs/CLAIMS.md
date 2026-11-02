@@ -45,9 +45,9 @@ Every substantive claim in this repository, the kind of support it has, where to
 
 | # | Claim | Kind | Evidence | Limits |
 |---|---|---|---|---|
-| 26 | A non-deterministic closure can be detected before training | tested (test written, first run pending) | `test_torch_verify_closure_determinism_*` | PyTorch only; the JAX engine cannot misalign because it receives the batch itself |
-| 27 | The PyTorch engine uses about 8N floats (parameters, a (4, N) state block, a (3, N) scratch block) versus roughly 4N for Adam including gradients | stated from the code | `src/torch_optimizer.py` (`_FlatBlock`) | peak memory not yet measured; `timing_study.py` reports it |
-| 28 | Telemetry-on versus telemetry-off step cost; GPU wall-clock versus direct solves | **not claimed** | `benchmarks/timing_study.py` provided, not run | to be filled in after a GPU run |
+| 26 | A non-deterministic closure can be detected before training | tested | `test_torch_verify_closure_determinism_*` (passed on Colab with the full 68-test suite) | PyTorch only; the JAX engine cannot misalign because it receives the batch itself |
+| 27 | The PyTorch engine uses about 8N floats (parameters, a (4, N) state block, a (3, N) scratch block) versus roughly 4N for Adam including gradients | stated from the code, measured | `src/torch_optimizer.py` (`_FlatBlock`); `results/timing/report.md` (peak extra GPU memory of the SVRG run was 2 to 9 MB, against up to 3.3 GB for `lstsq`) | the measured peak includes batch temporaries, not just the 8N buffers |
+| 28 | GPU step cost and wall-clock against direct solves (T4, float32, Gaussian features, untuned hyper-parameters): the engine step is about 1.6 ms with telemetry off, 1.9 ms lazy, 2.0 ms eager, independent of d from 256 to 2048; SVRG took 1.91, 0.94 and 0.49 s against 0.16, 0.15 and 0.49 s for normal equations at d = 256, 1024, 2048 | measured | `results/timing/report.md`, `results/timing/timing.json` | one GPU, one problem family (well conditioned), hyper-parameters not tuned, untuned Adam never reached the target, larger sizes untested; transcribed from the script's printed table |
 
 ## Latency and scope
 
@@ -55,24 +55,26 @@ Every substantive claim in this repository, the kind of support it has, where to
 |---|---|---|---|---|
 | 29 | A compiled C kernel reproduces the NumPy oracle's Jacobi-SVRG weights | tested | `test_c_kernel_matches_the_numpy_oracle` (max difference 3e-16); `python -m benchmarks.latency_kernel` | double precision, one problem family |
 | 30 | In compiled code on one core, at d = 32, a single-sample SVRG step costs about 129 ns, an RLS update about 0.96 µs and an inference dot product about 15 ns; a 100,000-row snapshot costs about 1.8 ms | measured | `results/latency.json`, `results/latency.md` | machine-specific (Xeon @ 2.1 GHz, shared cloud VM), best-of-7 timings, no thread pinning or fixed-point; says nothing about statistical usefulness |
-| 31 | The 2 ms GPU step reflects framework and host-synchronisation overhead rather than the algorithm | measured (indirectly) | the compiled step is four orders of magnitude cheaper | the split between PyTorch overhead and telemetry synchronisation is not measured; `timing_study.py` would do it |
-| 33 | `telemetry="lazy"` gives the same statistics as eager telemetry without a host read each step, and does not change the trajectory | tested (test written; first run pending) | `test_torch_lazy_telemetry_matches_eager_*` | whether it removes the 2 ms step on a GPU is unmeasured; `timing_study.py` measures it |
-| 34 | `make_svrg_scan` equals K sequential JAX steps | tested (test written; first run pending) | `test_jax_scan_matches_sequential_steps` | CPU-tested only; no timing claim |
+| 31 | The 2 ms GPU step is PyTorch per-step framework overhead (kernel launches and autograd), **not** host synchronisation from telemetry and not the algorithm | measured | engine step 1.6 ms with telemetry off (T4); compiled C step 129 to 217 ns at d = 32 | the split between kernel-launch and autograd cost is not measured |
+| 33 | `telemetry="lazy"` gives the same statistics as eager telemetry and does not change the trajectory; it saves about 6% of the step time on a T4 | tested, measured | `test_torch_lazy_telemetry_matches_eager_*` (passed on Colab); `results/timing/report.md` | the saving is small because telemetry is not the dominant cost |
+| 34 | `make_svrg_scan` equals K sequential JAX steps | tested | `test_jax_scan_matches_sequential_steps` (passed on Colab) | no timing claim |
 | 32 | Suitability for production high-frequency trading | **not claimed** | `README.md` Scope | the repository is offline research; RLS is exact per tick and the project does not show SVRG beating it online |
 
-## Real-market study (protocol only)
+## Real-market study (run by the owner on Colab)
 
 | # | Claim | Kind | Evidence | Limits |
 |---|---|---|---|---|
-| 22 | The walk-forward pipeline uses no future information | tested | `test_market_features_are_causal`, `test_walk_forward_predictions_have_no_lookahead` | tests use synthetic data; the live data path (`yfinance`/CSV) is not unit-tested beyond the CSV loader |
+| 22 | The walk-forward pipeline uses no future information | tested | `test_market_features_are_causal`, `test_walk_forward_predictions_have_no_lookahead` | tests use synthetic data; the live data path (`yfinance`) is exercised by the real run but not unit-tested |
 | 23 | The pipeline detects a genuine signal and not a shifted placebo | tested | `test_signal_is_detected_and_placebo_is_not` (three seeds, strong synthetic signal) | a weak signal (strength 1.0) is detected on some seeds and not others, as expected at that signal-to-noise |
 | 24 | The numbers in the report and the one-page summary are exactly those in `results/experiments.json`, and the report references no undefined number | tested | `test_report_numbers_are_in_sync_*`; `python paper/make_numbers.py --check` | covers generated numbers, not hand-written prose |
-| 25 | Any statement about real-market predictability or optimizer effects on real returns | **not claimed** | script provided, no results run by the author | to be filled in only after the owner runs it |
+| 25 | On ten ETFs (daily, 2008 to 2025, 3,749 out-of-sample days) there is no detectable tradable signal: fitted models' mean daily rank IC (-0.0022 to +0.0079) lies inside the placebo range (-0.0091 to +0.0090) and every net-of-cost Sharpe is negative | measured | `results/real_market/report.md` | ten ETFs, simple features, flat 5 bps cost, one placebo draw, no multiple-comparison correction; says nothing about other assets or frequencies |
+| 35 | Optimizer choice does not matter in that study: budget-limited Jacobi SVRG reproduces OLS (IC difference +0.0000, CI [-0.0000, +0.0001]) and Adam is indistinguishable (+0.0004, CI [-0.0078, +0.0087]) | measured | same report | the problem is small and well conditioned, so iterative methods converge to OLS |
+| 36 | Validated ridge beats OLS in that study (mean daily IC +0.0101, CI [+0.0012, +0.0188]; net Sharpe +0.45, CI [+0.20, +0.69]) | measured | same report | every net Sharpe is still negative; regularisation, not optimisation, is the lever |
 
 ## Explicitly not claimed
 
-* Performance on real financial data. No market data was used.
-* Any GPU or large-scale speed-up. The PyTorch engine has been validated for agreement with the oracle on a T4, but no timing study was done (a telemetry-enabled step took about 2 ms on a 32-parameter problem, dominated by host synchronisation).
+* A tradable edge in real markets. The one market study (10 ETFs, daily) found no detectable signal and negative net-of-cost Sharpe for every fitted model.
+* A general GPU speed-up. The timing study found that direct solves win at d = 256 and 1024 and SVRG only ties at d = 2048 (one GPU, well-conditioned features, untuned hyper-parameters); larger sizes were not tested.
 * Superiority of Coordinate SVRG in general. On the problems tested, the simpler Jacobi SVRG beat it wherever the
   Hessian diagonal was available; Coordinate SVRG's scaling is a gradient-only proxy.
 * Statistical significance beyond the paired bootstrap intervals reported; no multiple-comparison correction was applied.

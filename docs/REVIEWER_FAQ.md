@@ -31,7 +31,7 @@ Jacobi SVRG needs the Hessian diagonal, available for linear and generalised-lin
 the simpler method won every comparison I ran; that is stated in the report.
 
 **7. Does any of this beat just solving the problem directly?**
-Not at the sizes tested. At 40,000 by 200 the normal equations were slightly faster than SVRG (0.06 s versus 0.08 s, Experiment 5). The regime where SVRG could win (very large dimension, no closed form) was not tested.
+Not at the sizes tested on CPU: at 40,000 by 200 the normal equations were slightly faster than SVRG (0.06 s versus 0.08 s, Experiment 5). On a T4 GPU (float32, well-conditioned Gaussian features, untuned hyper-parameters) direct normal equations won at d = 256 and 1024 and SVRG tied at d = 2048 (0.488 s versus 0.490 s), where `lstsq` was 3.6 times slower. Larger sizes and badly conditioned problems were not tested.
 
 **8. What do the invariant ablations show?**
 Misaligned batches make the estimator about twice as bad as plain SGD, so alignment is what delivers the benefit. Textbook Adam failed in most adversarial float32 trials where the full
@@ -42,8 +42,7 @@ Three independent implementations (PyTorch, JAX, NumPy oracle) agree step for st
 numbers are machine-checked against the stored results. Limits: the experiment numbers come from the oracle, and no timing study was done.
 
 **10. Does this say anything about real markets?**
-No. The data are synthetic apart from three small non-financial datasets. `experiments/real_market_study.py` is provided, with a placebo and block-bootstrap intervals, but no results from it are included.
-Daily returns are barely predictable, so I expect small or null differences between optimizers.
+Only one thing, and it is a null. A walk-forward study of ten ETFs (daily, 2008 to 2025) found no detectable tradable signal: the fitted models' mean daily rank IC lies inside the placebo range, and every net-of-cost Sharpe ratio is negative. The optimizer did not matter (Jacobi SVRG reproduces OLS; Adam is indistinguishable); validated ridge beat OLS, so regularisation, not optimisation, was the lever. It is one study with simple features and flat costs, and it says nothing about other assets or frequencies (`results/real_market/report.md`). The rest of the evidence is synthetic apart from three small non-financial datasets.
 
 **11. What did you get wrong along the way?**
 See `CHANGELOG.md`: a claim about denominator clamping was retracted after an ablation, a "best on all datasets" statement became a tie, a missing convexity hypothesis was added to a theorem, and a theory
@@ -61,6 +60,5 @@ The simulator already has heavy tails, jumps, regime switches and autocorrelatio
 See `docs/AUDIT_RESPONSE.md` for the full response to an external critique.
 
 **15. Could this run in a high-frequency trading loop?**
-Not as it stands, and the repository does not claim it. It is an offline research and calibration project. Two things are worth separating, though. First, the 2 ms GPU step quoted in the docs measures PyTorch with host synchronisation on a tiny problem;
-a compiled C implementation of the same update costs about 129 ns per single-sample step at d = 32 (`results/latency.md`). Second, latency budgets of tens of microseconds apply to signal *inference* (a dot product, about 15 ns here), not to *fitting*; a refit on a trailing window can run off the critical path.
-What the project does not show is that variance-reduced fitting beats recursive least squares for online estimation: RLS is exact at every tick and costs about 1 µs at d = 32.
+Not as it stands, and the repository does not claim it. It is an offline research and calibration project. Two things are worth separating, though. First, the 2 ms GPU step is PyTorch per-step overhead: it is about 1.6 ms even with telemetry off on a T4, independent of problem size, whereas a compiled C implementation of the same update costs about 129 to 217 ns per single-sample step at d = 32 (`results/latency.md`, `results/latency_colab.md`). Second, latency budgets of tens of microseconds apply to signal *inference* (a dot product, 15 to 20 ns here), not to *fitting*; a refit on a trailing window can run off the critical path.
+What the project does not show is that variance-reduced fitting beats recursive least squares for online estimation: RLS is exact at every tick and costs about 1 to 1.5 µs at d = 32, and the one market study found no optimizer effect at all.

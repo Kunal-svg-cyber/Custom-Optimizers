@@ -679,23 +679,50 @@ scales are removed, the synthetic-data conclusion reproduces on real data. Cavea
 features Jacobi scaling is close to the identity, so Jacobi SVRG has no advantage over SVRG + momentum (on diabetes it is the worst SVRG variant, 3.8e-5, because it has no momentum and is budget-limited);
 three small datasets.
 
+## Results from the other scripts (run by the repository owner on Colab)
+
+These did not come from `run_experiments.py`. Sources are stored in `results/`; the report parses them, so its numbers cannot drift.
+
+**GPU wall-clock (`benchmarks/timing_study.py`; Tesla T4, float32, Gaussian features, fixed untuned hyper-parameters; source: `results/timing/report.md`).**
+
+| n | d | method | seconds | epochs | reached target | peak extra memory (MB) |
+|---|---|---|---|---|---|---|
+| 100000 | 256 | direct normal equations | 0.163 | - | yes | 1 |
+| 100000 | 256 | direct lstsq | 0.173 | - | yes | 294 |
+| 100000 | 256 | Jacobi SVRG (engine) | 1.911 | 3 | yes | 9 |
+| 100000 | 256 | Adam (untuned) | 21.262 | 60 | no | 1 |
+| 200000 | 1024 | direct normal equations | 0.153 | - | yes | 8 |
+| 200000 | 1024 | direct lstsq | 0.724 | - | yes | 1764 |
+| 200000 | 1024 | Jacobi SVRG (engine) | 0.943 | 3 | yes | 2 |
+| 200000 | 1024 | Adam (untuned) | 10.413 | 60 | no | 2 |
+| 200000 | 2048 | direct normal equations | 0.490 | - | yes | 32 |
+| 200000 | 2048 | direct lstsq | 1.758 | - | yes | 3337 |
+| 200000 | 2048 | Jacobi SVRG (engine) | 0.488 | 3 | yes | 2 |
+| 200000 | 2048 | Adam (untuned) | 5.165 | 60 | no | 2 |
+
+Engine step cost (microseconds per SVRG step): telemetry eager 2004, 1937, 2046; lazy 1887, 1943, 1875; off 1654, 1557, 1614, for d = 256, 1024, 2048. **Reading:** direct normal equations win at d = 256 and 1024; SVRG ties at d = 2048 (0.488 s against 0.490 s) and is 3.6 times faster than `lstsq` there with about 1,600 times less extra memory; the engine's step cost is about 1.6 ms even with telemetry off and does not depend on d, so the earlier attribution of the 2 ms step to host synchronisation was wrong. SVRG's time falls with d only because the batch size grows with d (fewer steps per epoch). Caveats: one GPU, well-conditioned features (SVRG's best case), untuned hyper-parameters, untuned Adam is a weak baseline, sizes above d = 2048 untested.
+
+**Compiled-kernel latency on a Colab CPU (`benchmarks/latency_kernel.py`; source: `results/latency_colab.md`).** At d = 32: inference dot product 20 ns, SVRG single-sample step 217 ns, 64-sample batch 6.9 µs, recursive least squares update 1.5 µs, snapshot over 100,000 rows 3.1 ms. On the development machine the same step was 129 ns (`results/latency.md`): the same order, with machine-to-machine variation of about 1.7 times.
+
+**Real-market walk-forward study (`experiments/real_market_study.py`; source: `results/real_market/report.md`).** Ten ETFs, daily, 2008 to 2025, 3,749 out-of-sample days, dollar-neutral long-short strategy, 5 bps cost per unit traded, with a placebo run on circularly shifted targets. Fitted models' mean daily rank IC lies between -0.0022 and +0.0079, inside the placebo range (-0.0091 to +0.0090); every net-of-cost Sharpe is negative (best -0.76); budget-limited Jacobi SVRG reproduces OLS exactly and Adam is indistinguishable from it; validated ridge beats OLS in mean daily IC by +0.0101 (95% CI [+0.0012, +0.0188]) and in net Sharpe by +0.45 (CI [+0.20, +0.69]). **No tradable signal was found, and the optimizer did not matter; regularisation did.** One placebo draw, ten assets, simple features, flat costs, no multiple-comparison correction.
+
 ## Limitations (read before citing any number)
 
 * **Mostly synthetic data.** The simulator generates what the model assumes (linear hidden signal, additive noise, jumps). The only real data are three small non-financial datasets (Experiments 13 and 16), where the round-off results reproduce only after the features are standardised. Nothing here is evidence of real-market performance.
 * **Small models, modest scale.** The largest problem is `n = 40000`, `d = 200`, and a direct solve is as fast as any iterative method on it. The non-convex case is one 289-parameter network. No deep-learning results; variance reduction is known to help much less there (Defazio & Bottou, 2019).
 * **Held-out checks are limited.** Experiment 8 uses a random split for logistic regression and the network only, with learning rates tuned on training loss; Experiment 3 is out-of-sample in time but uses least squares. Nothing was tuned on validation data.
-* **Sample-gradient evaluations are not wall-clock time**, and the wall-clock figures are NumPy on one CPU core, not the PyTorch/JAX engines on a GPU.
+* **Sample-gradient evaluations are not wall-clock time.** The wall-clock figures in Experiment 5 are NumPy on one CPU core; GPU timings of the PyTorch engine come from a separate script and are reported below (one GPU, one well-conditioned problem family, untuned hyper-parameters).
 * **Tuning cost is excluded** from the iterative timings.
 * **Jacobi SVRG needs the Hessian diagonal**, available for linear and generalised-linear models but not in general, and its theory variant (single-sample steps) is slow per evaluation in wall-clock terms. It was tested on least squares (theory-prescribed and tuned) and logistic regression (tuned only).
 * **The adaptive variant has no convergence proof** (see `THEORY.md`, Section 4). The cosine-decay results are empirical.
 * **Uneven seed counts** (3 evaluation seeds in Experiment 5, 8 in Experiment 7) make those intervals wide. Intervals in the main tables are interquartile ranges; the paired table has bootstrap confidence intervals over seeds. No multiple-comparison correction.
 * **Some learning rates sit on the grid edge** (marked †; SVRG + momentum in several cells, SGD in the non-convex cell). The true optimum could be somewhat better, so the SVRG + momentum versus Coordinate SVRG ordering in those cells should not be over-read.
-* **Engine validation vs experiment numbers.** The PyTorch and JAX engines passed the full test suite (58 tests at the time) on a Colab T4 runtime (and CPU CI), including step-for-step agreement with the NumPy oracle; on the GPU the PyTorch engine stayed within 1.8e-7 of the oracle over 100 steps, and a 640-step benchmark's final SVRG and Adam numbers matched the oracle to four significant digits. The experiment numbers above still come from the oracle, not from the engines, and no speed claim is made.
+* **Engine validation vs experiment numbers.** The PyTorch and JAX engines passed the full 68-test suite on a Colab T4 runtime, including step-for-step agreement with the NumPy oracle; on the GPU the PyTorch engine stayed within 1.8e-7 of the oracle over 100 steps. The experiment numbers above still come from the oracle, not from the engines.
 
 ## Next steps that would make the claims stronger
 
-1. Run a timing study of the PyTorch engine on a GPU, on a problem large enough that wall-clock could favour iterative methods, and report time to target including tuning.
-1a. Run `experiments/real_market_study.py` on real daily returns (with its placebo) and report the result, whether null or not.
+1. Extend the GPU timing study beyond d = 2048, to badly conditioned problems and to tuned hyper-parameters; the crossover with direct solves was found at about d = 2048 for n = 200,000.
+1a. Repeat the real-market study with more assets, other frequencies and richer features, and with several placebo draws; the one study so far found no signal.
 2. Re-run Experiment 8 with learning rates and stopping points tuned on validation loss.
 3. Tighten Proposition 3 (its bound is loose by orders of magnitude in practice).
 4. Attempt the conjecture in `THEORY.md` Section 4, or construct a counterexample.
