@@ -1,0 +1,131 @@
+{
+ "_note": "Transcribed from the report table printed by benchmarks/timing_study.py on Google Colab (values rounded as printed).",
+ "rows": [
+  {
+   "n": 100000,
+   "d": 256,
+   "method": "direct_normal_equations",
+   "seconds": 0.163,
+   "epochs": null,
+   "reached": true,
+   "peak_extra_mb": 1
+  },
+  {
+   "n": 100000,
+   "d": 256,
+   "method": "direct_lstsq",
+   "seconds": 0.173,
+   "epochs": null,
+   "reached": true,
+   "peak_extra_mb": 294
+  },
+  {
+   "n": 100000,
+   "d": 256,
+   "method": "svrg_jacobi",
+   "seconds": 1.911,
+   "epochs": 3,
+   "reached": true,
+   "peak_extra_mb": 9
+  },
+  {
+   "n": 100000,
+   "d": 256,
+   "method": "adam",
+   "seconds": 21.262,
+   "epochs": 60,
+   "reached": false,
+   "peak_extra_mb": 1
+  },
+  {
+   "n": 200000,
+   "d": 1024,
+   "method": "direct_normal_equations",
+   "seconds": 0.153,
+   "epochs": null,
+   "reached": true,
+   "peak_extra_mb": 8
+  },
+  {
+   "n": 200000,
+   "d": 1024,
+   "method": "direct_lstsq",
+   "seconds": 0.724,
+   "epochs": null,
+   "reached": true,
+   "peak_extra_mb": 1764
+  },
+  {
+   "n": 200000,
+   "d": 1024,
+   "method": "svrg_jacobi",
+   "seconds": 0.943,
+   "epochs": 3,
+   "reached": true,
+   "peak_extra_mb": 2
+  },
+  {
+   "n": 200000,
+   "d": 1024,
+   "method": "adam",
+   "seconds": 10.413,
+   "epochs": 60,
+   "reached": false,
+   "peak_extra_mb": 2
+  },
+  {
+   "n": 200000,
+   "d": 2048,
+   "method": "direct_normal_equations",
+   "seconds": 0.49,
+   "epochs": null,
+   "reached": true,
+   "peak_extra_mb": 32
+  },
+  {
+   "n": 200000,
+   "d": 2048,
+   "method": "direct_lstsq",
+   "seconds": 1.758,
+   "epochs": null,
+   "reached": true,
+   "peak_extra_mb": 3337
+  },
+  {
+   "n": 200000,
+   "d": 2048,
+   "method": "svrg_jacobi",
+   "seconds": 0.488,
+   "epochs": 3,
+   "reached": true,
+   "peak_extra_mb": 2
+  },
+  {
+   "n": 200000,
+   "d": 2048,
+   "method": "adam",
+   "seconds": 5.165,
+   "epochs": 60,
+   "reached": false,
+   "peak_extra_mb": 2
+  }
+ ],
+ "step_cost": {
+  "100000x256": {
+   "telemetry_on_us": 2004,
+   "telemetry_lazy_us": 1887,
+   "telemetry_off_us": 1654
+  },
+  "200000x1024": {
+   "telemetry_on_us": 1937,
+   "telemetry_lazy_us": 1943,
+   "telemetry_off_us": 1557
+  },
+  "200000x2048": {
+   "telemetry_on_us": 2046,
+   "telemetry_lazy_us": 1875,
+   "telemetry_off_us": 1614
+  }
+ },
+ "device": "Tesla T4"
+}
