@@ -42,9 +42,11 @@ Snapshot-interval sensitivity & within \ExpNineMidFactor$\times$ of best for $16
 \textbf{What did not work, stated plainly.}
 \begin{itemize}
 \item \textbf{Real data:} on three small real datasets with raw features no method reached the target and Jacobi SVRG led the best tuned baseline by only \ExpThirteenMinDiff--\ExpThirteenMaxDiff{} decades; after \emph{standardising} the features, SVRG variants reached the target on \ExpSixteenSvrgReached{} datasets and the baselines on \ExpSixteenBaselineReached{}, so the shortfall was raw-scale conditioning.
-\item \textbf{Scope:} offline research, not a production trading component. A compiled single-sample SVRG step costs \LatSvrgOne{} at $d=32$ (inference dot product \LatDot), so the 2\,ms GPU step measures framework overhead, not the algorithm.
+\item \textbf{Scope:} offline research, not a production trading component. A compiled single-sample SVRG step costs \LatSvrgOne{} at $d=32$ (inference dot product \LatDot), so the 2\,ms GPU step is framework overhead, not the algorithm.
+\item \textbf{Market data:} a walk-forward study of \RealMktAssets{} ETFs found \textbf{no tradable signal} (net Sharpe at best \RealMktBestNetSharpe) and no optimizer effect (Jacobi SVRG reproduces OLS); regularisation mattered more.
+\item \textbf{GPU wall-clock:} on a T4, SVRG ties the best direct solve only at the largest size tested ($d=2048$: \GpuSvrgLarge{} s against \GpuNormalLarge{} s) and loses at smaller sizes; the engine step costs about \GpuOffUs{} even with telemetry off.
 \item \textbf{No wall-clock win} over a direct solve at $n=\ExpFiveN$, $d=\ExpFiveD$ (normal equations \ExpFiveNormalSeconds\,s, SVRG \ExpFiveSvrgSeconds\,s); \textbf{no benefit} for walk-forward signal tracking (IC differences at most \ExpThreeMaxICDiff).
-\item \textbf{Non-convex network:} sharper stationarity but worse held-out loss; with validation-tuned rates the deficit tracks adaptive scaling, not variance reduction. The adaptive engine has \textbf{no convergence proof}; \textbf{no market data} was used; \textbf{GPU wall-clock is unmeasured}.
+\item \textbf{Non-convex network:} sharper stationarity but worse held-out loss; with validation-tuned rates the deficit tracks adaptive scaling, not variance reduction. The adaptive engine has \textbf{no convergence proof}.
 \end{itemize}
 
 \textbf{Corrections made along the way} (logged in \texttt{CHANGELOG.md}): a claimed benefit of clamping over additive $\varepsilon$ was retracted after an ablation; a ``best on all datasets'' statement was corrected to a tie; a missing convexity hypothesis was added to a theorem statement.

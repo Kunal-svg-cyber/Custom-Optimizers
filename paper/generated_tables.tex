@@ -70,3 +70,19 @@ diabetes & 1.8 & $5.2\times 10^{7}\to 4.0\times 10^{4}$ & $2.4\times 10^{1}$ & $
 \caption{Real datasets with raw, unstandardised features (plus an intercept): median final loss gap after 1000 epochs of sample-gradient evaluations, learning rates tuned per method. No method reached the $10^{-8}$ target on any dataset.}
 \label{tab:real}
 \end{table}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}rrrrrr@{}}
+\toprule
+$n$ & $d$ & normal equations (s) & \texttt{lstsq} (s) & Jacobi SVRG (s) & Adam, untuned \\
+\midrule
+100\,000 & 256 & 0.163 & 0.173 & 1.911 & not reached \\
+200\,000 & 1024 & 0.153 & 0.724 & 0.943 & not reached \\
+200\,000 & 2048 & 0.490 & 1.758 & 0.488 & not reached \\
+\bottomrule
+\end{tabular}
+\caption{GPU wall-clock (Colab T4, float32, Gaussian features, target excess loss $10^{-4}$ of the initial excess). Jacobi SVRG is the PyTorch engine with a frozen preconditioner, telemetry off, fixed untuned hyper-parameters.}
+\label{tab:gpu}
+\end{table}

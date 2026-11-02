@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -279,6 +280,92 @@ def main(check: bool = False) -> None:
     macros["LatDiffErr"] = sci(lat["differential_max_abs_error"])
     macros["LatCpu"] = lat["cpu"].replace("(R)", "").replace("Processor", "").replace("  ", " ").strip()
 
+    # ---- GPU timing (run by the repository owner on a Colab T4) ----
+    gpu = json.loads((REPO_ROOT / "results" / "timing" / "timing.json").read_text(encoding="utf-8"))
+    def grow(n: int, d: int, method: str) -> Dict[str, Any]:
+        return [x for x in gpu["rows"] if x["n"] == n and x["d"] == d and x["method"] == method][0]
+    macros["GpuSvrgLarge"] = f"{grow(200000, 2048, 'svrg_jacobi')['seconds']:.3f}"
+    macros["GpuNormalLarge"] = f"{grow(200000, 2048, 'direct_normal_equations')['seconds']:.3f}"
+    macros["GpuLstsqLarge"] = f"{grow(200000, 2048, 'direct_lstsq')['seconds']:.2f}"
+    macros["GpuLstsqOverSvrg"] = f"{grow(200000, 2048, 'direct_lstsq')['seconds'] / grow(200000, 2048, 'svrg_jacobi')['seconds']:.1f}"
+    macros["GpuSvrgSmall"] = f"{grow(100000, 256, 'svrg_jacobi')['seconds']:.2f}"
+    macros["GpuNormalSmall"] = f"{grow(100000, 256, 'direct_normal_equations')['seconds']:.3f}"
+    macros["GpuSvrgMid"] = f"{grow(200000, 1024, 'svrg_jacobi')['seconds']:.2f}"
+    macros["GpuNormalMid"] = f"{grow(200000, 1024, 'direct_normal_equations')['seconds']:.3f}"
+    macros["GpuSvrgEpochs"] = str(max(grow(n, d, "svrg_jacobi")["epochs"] for n, d in ((100000, 256), (200000, 1024), (200000, 2048))))
+    macros["GpuLstsqMemory"] = f"{max(x['peak_extra_mb'] for x in gpu['rows'] if x['method'] == 'direct_lstsq') / 1024:.1f}"
+    macros["GpuSvrgMemory"] = str(max(x["peak_extra_mb"] for x in gpu["rows"] if x["method"] == "svrg_jacobi"))
+    macros["GpuAdamReached"] = "no" if not any(x["reached"] for x in gpu["rows"] if x["method"] == "adam") else "yes"
+    steps = list(gpu["step_cost"].values())
+    def ms(us: float) -> str:
+        return f"{us / 1000:.1f}\\,ms"
+    macros["GpuEagerUs"] = ms(float(np.median([x["telemetry_on_us"] for x in steps])))
+    macros["GpuLazyUs"] = ms(float(np.median([x["telemetry_lazy_us"] for x in steps])))
+    macros["GpuOffUs"] = ms(float(np.median([x["telemetry_off_us"] for x in steps])))
+    macros["GpuEagerOverOff"] = f"{float(np.median([x['telemetry_on_us'] / x['telemetry_off_us'] for x in steps])):.1f}"
+    macros["GpuLazySaving"] = f"{100 * float(np.median([1 - x['telemetry_lazy_us'] / x['telemetry_on_us'] for x in steps])):.0f}"
+
+    latc = json.loads((REPO_ROOT / "results" / "latency_colab.json").read_text(encoding="utf-8"))
+    c32 = [x for x in latc["rows"] if x["d"] == 32][0]
+    c128 = [x for x in latc["rows"] if x["d"] == 128][0]
+    macros["LatColabDot"] = tfmt(c32["dot_inference_ns"])
+    macros["LatColabRls"] = tfmt(c32["rls_update_ns"])
+    macros["LatColabSvrgOne"] = tfmt(c32["svrg_step_b1_ns"])
+    macros["LatColabSvrgBatch"] = tfmt(c32["svrg_step_b64_ns"])
+    macros["LatColabSnapshot"] = tfmt(c32["snapshot_ns"])
+    macros["LatColabRlsOverSvrgHundredTwentyEight"] = f"{c128['rls_update_ns'] / c128['svrg_step_b1_ns']:.0f}"
+
+    # ---- real-market walk-forward study (parsed from the script's own report) ----
+    rm_text = (REPO_ROOT / "results" / "real_market" / "report.md").read_text(encoding="utf-8")
+    def tex_num(x: str) -> str:
+        return x.replace("-", "{-}")
+    def section_tables(header: str) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+        start = rm_text.index(header)
+        nxt = rm_text.find("###", start + 5)
+        block = rm_text[start: nxt if nxt != -1 else len(rm_text)]
+        main: Dict[str, List[str]] = {}
+        paired: Dict[str, List[str]] = {}
+        for line in block.splitlines():
+            if not line.startswith("|") or line.startswith("|---") or "| Method |" in line:
+                continue
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            (main if len(cells) == 7 else paired)[cells[0]] = cells[1:]
+        return main, paired
+    real_main, real_paired = section_tables("### Real run")
+    plc_main, plc_paired = section_tables("### Placebo")
+    head = re.search(r"(\d+) days, (\d+) assets", rm_text)
+    macros["RealMktDaysTotal"] = f"{int(head.group(1)):,}".replace(",", "{,}")
+    macros["RealMktAssets"] = head.group(2)
+    macros["RealMktOosDays"] = f"{int(real_main['OLS (closed form)'][0]):,}".replace(",", "{,}")
+    macros["RealMktOlsIC"] = tex_num(real_main["OLS (closed form)"][1])
+    macros["RealMktRidgeIC"] = tex_num(real_main["Ridge (validated)"][1])
+    macros["RealMktOlsPooled"] = tex_num(real_main["OLS (closed form)"][2])
+    macros["RealMktRidgePooled"] = tex_num(real_main["Ridge (validated)"][2])
+    plc_ic = [float(v[1]) for v in plc_main.values()]
+    plc_pooled = [abs(float(v[2])) for v in plc_main.values()]
+    macros["RealMktPlaceboICLow"] = tex_num(f"{min(plc_ic):+.4f}")
+    macros["RealMktPlaceboICHigh"] = tex_num(f"{max(plc_ic):+.4f}")
+    macros["RealMktPlaceboPooledMax"] = f"{max(plc_pooled):.4f}"
+    ridge_ic, ridge_sh = real_paired["Ridge (validated)"]
+    macros["RealMktRidgeDiff"] = tex_num(ridge_ic.split(" ")[0])
+    macros["RealMktRidgeDiffCI"] = tex_num(ridge_ic[ridge_ic.index("["):])
+    macros["RealMktRidgeSharpeDiff"] = tex_num(ridge_sh.split(" ")[0])
+    macros["RealMktRidgeSharpeDiffCI"] = tex_num(ridge_sh[ridge_sh.index("["):])
+    adam_ic = real_paired["Adam, budget-limited"][0]
+    macros["RealMktAdamDiff"] = tex_num(adam_ic.split(" ")[0])
+    macros["RealMktAdamDiffCI"] = tex_num(adam_ic[adam_ic.index("["):])
+    svrg_ic = real_paired["Jacobi SVRG, budget-limited"][0]
+    macros["RealMktSvrgDiff"] = tex_num(svrg_ic.split(" ")[0])
+    macros["RealMktSvrgDiffCI"] = tex_num(svrg_ic[svrg_ic.index("["):])
+    fitted = ("OLS (closed form)", "Ridge (validated)", "Adam, budget-limited", "Jacobi SVRG, budget-limited")
+    macros["RealMktBestNetSharpe"] = tex_num(f"{max(float(real_main[m][4]) for m in fitted):+.2f}")
+    macros["RealMktOlsNetSharpe"] = tex_num(real_main["OLS (closed form)"][4])
+    fitted_ic = [float(real_main[m][1]) for m in fitted]
+    macros["RealMktFittedICLow"] = tex_num(f"{min(fitted_ic):+.4f}")
+    macros["RealMktFittedICHigh"] = tex_num(f"{max(fitted_ic):+.4f}")
+    macros["RealMktOlsTurnover"] = real_main["OLS (closed form)"][5]
+    macros["RealMktMomNetSharpe"] = tex_num(real_main["21-day momentum (no fitting)"][4])
+
     # ---- Experiment 3 (walk-forward) ----
     wf = r["walk_forward"]["by_budget"]
     diffs: List[float] = []
@@ -329,6 +416,15 @@ def main(check: bool = False) -> None:
     rt += [r"\bottomrule", r"\end{tabular}",
            r"\caption{Real datasets with raw, unstandardised features (plus an intercept): median final loss gap after 1000 epochs of sample-gradient evaluations, learning rates tuned per method. No method reached the $10^{-8}$ target on any dataset.}",
            r"\label{tab:real}", r"\end{table}"]
+    gt = [r"\begin{table}[h]", r"\centering", r"\small", r"\begin{tabular}{@{}rrrrrr@{}}", r"\toprule",
+          r"$n$ & $d$ & normal equations (s) & \texttt{lstsq} (s) & Jacobi SVRG (s) & Adam, untuned \\", r"\midrule"]
+    for (n_, d_) in ((100000, 256), (200000, 1024), (200000, 2048)):
+        a_ = grow(n_, d_, "direct_normal_equations"); b_ = grow(n_, d_, "direct_lstsq")
+        c_ = grow(n_, d_, "svrg_jacobi"); e_ = grow(n_, d_, "adam")
+        gt.append(rf"{n_:,} & {d_} & {a_['seconds']:.3f} & {b_['seconds']:.3f} & {c_['seconds']:.3f} & {'not reached' if not e_['reached'] else format(e_['seconds'], '.3f')} \\".replace(",", r"\,"))
+    gt += [r"\bottomrule", r"\end{tabular}",
+           r"\caption{GPU wall-clock (Colab T4, float32, Gaussian features, target excess loss $10^{-4}$ of the initial excess). Jacobi SVRG is the PyTorch engine with a frozen preconditioner, telemetry off, fixed untuned hyper-parameters.}",
+           r"\label{tab:gpu}", r"\end{table}"]
     tables = [
         table("ablation", "volatile",
               r"Least squares, volatile regime. Median final loss gap and sample-gradient evaluations to reach $10^{-8}$ of the initial gap, held-out seeds. $\dagger$: best learning rate on the edge of the grid.",
@@ -338,6 +434,7 @@ def main(check: bool = False) -> None:
               "tab:hetero"),
         "\n".join(jt),
         "\n".join(rt),
+        "\n".join(gt),
     ]
     tables_text: str = "\n\n".join(tables) + "\n"
     numbers_path = REPO_ROOT / "paper" / "numbers.tex"
