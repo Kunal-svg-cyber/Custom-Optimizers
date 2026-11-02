@@ -1,0 +1,40 @@
+{
+ "_note": "Transcribed from the table printed by benchmarks/latency_kernel.py on Google Colab (values rounded as printed).",
+ "rows": [
+  {
+   "d": 8,
+   "window": 100000,
+   "dot_inference_ns": 4,
+   "rls_update_ns": 84,
+   "sgd_step_b1_ns": 62,
+   "svrg_step_b1_ns": 95,
+   "svrg_step_b8_ns": 370,
+   "svrg_step_b64_ns": 1464,
+   "snapshot_ns": 580000.0
+  },
+  {
+   "d": 32,
+   "window": 100000,
+   "dot_inference_ns": 20,
+   "rls_update_ns": 1467,
+   "sgd_step_b1_ns": 119,
+   "svrg_step_b1_ns": 217,
+   "svrg_step_b8_ns": 836,
+   "svrg_step_b64_ns": 6854,
+   "snapshot_ns": 3090000.0
+  },
+  {
+   "d": 128,
+   "window": 100000,
+   "dot_inference_ns": 126,
+   "rls_update_ns": 29620,
+   "sgd_step_b1_ns": 318,
+   "svrg_step_b1_ns": 641,
+   "svrg_step_b8_ns": 4614,
+   "svrg_step_b64_ns": 36265,
+   "snapshot_ns": 20970000.0
+  }
+ ],
+ "cpu": "Intel(R) Xeon(R) CPU @ 2.00GHz (Google Colab)",
+ "differential_max_abs_error": 3.33e-16
+}
